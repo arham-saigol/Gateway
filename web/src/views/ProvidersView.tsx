@@ -13,11 +13,10 @@ export function ProvidersView() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [selectedKeyId, setSelectedKeyId] = useState('');
-  const [selectedKeyName, setSelectedKeyName] = useState('');
+  const [selectedKeyPrefix, setSelectedKeyPrefix] = useState('');
 
   // Form states
-  const [formProviderId, setFormProviderId] = useState('fireworks');
-  const [formDisplayName, setFormDisplayName] = useState('');
+  const [formProviderId, setFormProviderId] = useState('');
   const [formSecret, setFormSecret] = useState('');
   const [formStartingBalanceUSD, setFormStartingBalanceUSD] = useState('6.00');
 
@@ -34,6 +33,9 @@ export function ProvidersView() {
       setLoading(true);
       const res = await apiRequest<Provider[]>('/api/providers');
       setProviders(res || []);
+      if (res && res.length > 0 && !formProviderId) {
+        setFormProviderId(res[0].id);
+      }
       setError('');
     } catch (err: any) {
       setError(err.message || 'Failed to load providers');
@@ -47,11 +49,11 @@ export function ProvidersView() {
     setSubmitting(true);
     try {
       const startingMicro = Math.round(parseFloat(formStartingBalanceUSD) * 1000000);
+      const pId = formProviderId || (providers[0] ? providers[0].id : 'fireworks');
       await apiRequest('/api/providers/keys', {
         method: 'POST',
         body: JSON.stringify({
-          provider_id: formProviderId,
-          display_name: formDisplayName,
+          provider_id: pId,
           secret: formSecret,
           starting_balance_micro_usd: startingMicro,
         }),
@@ -59,7 +61,6 @@ export function ProvidersView() {
 
       setShowAddModal(false);
       setFormSecret('');
-      setFormDisplayName('');
       loadProviders();
     } catch (err: any) {
       alert(err.message);
@@ -103,9 +104,9 @@ export function ProvidersView() {
     }
   }
 
-  function openAdjustModal(keyId: string, keyName: string) {
+  function openAdjustModal(keyId: string, keyPrefix: string) {
     setSelectedKeyId(keyId);
-    setSelectedKeyName(keyName);
+    setSelectedKeyPrefix(keyPrefix);
     setAdjustAmountUSD('5.00');
     setAdjustNote('');
     setShowAdjustModal(true);
@@ -169,7 +170,6 @@ export function ProvidersView() {
               <table>
                 <thead>
                   <tr>
-                    <th>Display Name</th>
                     <th>Key Prefix</th>
                     <th>Starting Balance</th>
                     <th>Status</th>
@@ -180,7 +180,7 @@ export function ProvidersView() {
                 <tbody>
                   {(!p.keys || p.keys.length === 0) ? (
                     <tr>
-                      <td colSpan={6} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                      <td colSpan={5} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)' }}>
                         No configured keys for {p.name}. Click "Add Provider Key" above to add one.
                       </td>
                     </tr>
@@ -188,19 +188,16 @@ export function ProvidersView() {
                     p.keys.map(k => (
                       <tr key={k.id}>
                         <td>
-                          <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{k.display_name}</div>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                            <span class="code-inline" style={{ fontWeight: 600 }}>{k.key_prefix}</span>
+                            <CopyButton text={k.key_prefix} size="xs" />
+                          </div>
                           {k.safe_last_error && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--danger)', fontSize: '11.5px', marginTop: '3px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--danger)', fontSize: '11.5px', marginTop: '4px' }}>
                               <IconAlertTriangle size={12} />
                               <span>{k.safe_last_error}</span>
                             </div>
                           )}
-                        </td>
-                        <td>
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                            <span class="code-inline">{k.key_prefix}</span>
-                            <CopyButton text={k.key_prefix} size="xs" />
-                          </div>
                         </td>
                         <td style={{ fontFamily: 'var(--font-mono)' }}>{formatUSD(k.starting_balance_micro_usd)}</td>
                         <td>
@@ -222,7 +219,7 @@ export function ProvidersView() {
                           <div style={{ display: 'inline-flex', gap: '6px', justifyContent: 'flex-end' }}>
                             <button
                               class="btn btn-secondary btn-sm"
-                              onClick={() => openAdjustModal(k.id, k.display_name)}
+                              onClick={() => openAdjustModal(k.id, k.key_prefix)}
                               title="Adjust starting balance or add credit"
                             >
                               Adjust Balance
@@ -266,7 +263,7 @@ export function ProvidersView() {
             <label class="form-label">Provider</label>
             <select
               class="form-select"
-              value={formProviderId}
+              value={formProviderId || (providers[0]?.id ?? '')}
               onChange={(e: any) => setFormProviderId(e.target.value)}
             >
               {providers.map(p => (
@@ -276,24 +273,12 @@ export function ProvidersView() {
           </div>
 
           <div class="form-group">
-            <label class="form-label">Display Name / Label</label>
-            <input
-              type="text"
-              class="form-input"
-              required
-              placeholder="e.g. Primary Fireworks Key"
-              value={formDisplayName}
-              onInput={(e: any) => setFormDisplayName(e.target.value)}
-            />
-          </div>
-
-          <div class="form-group">
             <label class="form-label">Upstream Secret API Key</label>
             <input
               type="password"
               class="form-input"
               required
-              placeholder="fw_... or sk-..."
+              placeholder="Enter provider API key"
               value={formSecret}
               onInput={(e: any) => setFormSecret(e.target.value)}
             />
@@ -320,7 +305,7 @@ export function ProvidersView() {
       <Modal
         isOpen={showAdjustModal}
         onClose={() => setShowAdjustModal(false)}
-        title={`Adjust Balance: ${selectedKeyName}`}
+        title={`Adjust Balance: ${selectedKeyPrefix}`}
         footer={
           <>
             <button type="button" class="btn btn-ghost" onClick={() => setShowAdjustModal(false)}>

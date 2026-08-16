@@ -117,7 +117,6 @@ export function OverviewView() {
             <thead>
               <tr>
                 <th>Provider</th>
-                <th>Display Name</th>
                 <th>Prefix</th>
                 <th>Starting Balance</th>
                 <th>Adjustments</th>
@@ -129,7 +128,7 @@ export function OverviewView() {
             <tbody>
               {(!data?.key_balances || data.key_balances.length === 0) ? (
                 <tr>
-                  <td colSpan={8} style={{ padding: 0 }}>
+                  <td colSpan={7} style={{ padding: 0 }}>
                     <EmptyState
                       icon={<IconCloud size={24} />}
                       title="No provider keys configured"
@@ -143,7 +142,6 @@ export function OverviewView() {
                     <td style={{ fontWeight: 600, textTransform: 'capitalize', color: 'var(--text-primary)' }}>
                       {k.provider_id}
                     </td>
-                    <td>{k.display_name}</td>
                     <td>
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                         <span class="code-inline">{k.key_prefix}</span>

@@ -367,8 +367,8 @@ func (h *Handler) handleCreateProviderKey(w http.ResponseWriter, r *http.Request
 		StartingBalanceMicroUSD int64  `json:"starting_balance_micro_usd"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ProviderID == "" || body.Secret == "" || body.DisplayName == "" {
-		http.Error(w, `{"error":"invalid provider key payload"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ProviderID == "" || body.Secret == "" {
+		http.Error(w, `{"error":"provider_id and secret are required"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -387,6 +387,11 @@ func (h *Handler) handleCreateProviderKey(w http.ResponseWriter, r *http.Request
 		prefix = "***"
 	}
 
+	displayName := body.DisplayName
+	if displayName == "" {
+		displayName = prefix
+	}
+
 	now := time.Now().UTC()
 	keyID := generateRandomID("pkey-")
 
@@ -394,7 +399,7 @@ func (h *Handler) handleCreateProviderKey(w http.ResponseWriter, r *http.Request
 		ID:                      keyID,
 		ProviderID:              body.ProviderID,
 		EncryptedSecret:         encSecret,
-		DisplayName:             body.DisplayName,
+		DisplayName:             displayName,
 		KeyPrefix:               prefix,
 		StartingBalanceMicroUSD: body.StartingBalanceMicroUSD,
 		Status:                  "active",
