@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'preact/hooks';
 import { apiRequest, formatUSD } from '../api';
 import type { Provider } from '../types';
+import { IconPlus, IconCloud, IconAlertTriangle, IconClock, IconZap } from '../components/Icons';
+import { Badge, CopyButton, Modal, Callout, EmptyState } from '../components/UI';
 
 export function ProvidersView() {
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -11,6 +13,7 @@ export function ProvidersView() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [selectedKeyId, setSelectedKeyId] = useState('');
+  const [selectedKeyName, setSelectedKeyName] = useState('');
 
   // Form states
   const [formProviderId, setFormProviderId] = useState('fireworks');
@@ -20,6 +23,7 @@ export function ProvidersView() {
 
   const [adjustAmountUSD, setAdjustAmountUSD] = useState('5.00');
   const [adjustNote, setAdjustNote] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     loadProviders();
@@ -40,6 +44,7 @@ export function ProvidersView() {
 
   async function handleCreateKey(e: any) {
     e.preventDefault();
+    setSubmitting(true);
     try {
       const startingMicro = Math.round(parseFloat(formStartingBalanceUSD) * 1000000);
       await apiRequest('/api/providers/keys', {
@@ -58,6 +63,8 @@ export function ProvidersView() {
       loadProviders();
     } catch (err: any) {
       alert(err.message);
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -76,6 +83,7 @@ export function ProvidersView() {
 
   async function handleAddAdjustment(e: any) {
     e.preventDefault();
+    setSubmitting(true);
     try {
       const micro = Math.round(parseFloat(adjustAmountUSD) * 1000000);
       await apiRequest(`/api/providers/keys/${selectedKeyId}/adjust`, {
@@ -90,36 +98,71 @@ export function ProvidersView() {
       loadProviders();
     } catch (err: any) {
       alert(err.message);
+    } finally {
+      setSubmitting(false);
     }
+  }
+
+  function openAdjustModal(keyId: string, keyName: string) {
+    setSelectedKeyId(keyId);
+    setSelectedKeyName(keyName);
+    setAdjustAmountUSD('5.00');
+    setAdjustNote('');
+    setShowAdjustModal(true);
   }
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+      <div class="page-header">
         <div>
-          <h2 style={{ fontSize: '18px', fontWeight: 600 }}>Upstream Providers & API Keys</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
-            Configure and manage encrypted keys for upstream model providers.
-          </p>
+          <h1 class="page-title">Providers & Keys</h1>
+          <p class="page-subtitle">Configure encrypted credentials and balance tracking for upstream LLM providers.</p>
         </div>
-        <button class="btn btn-primary" onClick={() => setShowAddModal(true)}>+ Add Provider Key</button>
+        <button class="btn btn-primary" onClick={() => setShowAddModal(true)}>
+          <IconPlus size={14} />
+          <span>Add Provider Key</span>
+        </button>
       </div>
 
-      {error && <div style={{ padding: '16px', color: 'var(--danger)', marginBottom: '16px' }}>{error}</div>}
+      <Callout>
+        <strong>AES-GCM Encryption:</strong> All provider keys are encrypted with your master key at rest before touching SQLite.
+        Keys are never decrypted or returned to the browser after creation.
+      </Callout>
+
+      {error && (
+        <div style={{ padding: '14px 18px', backgroundColor: 'var(--danger-bg)', border: '1px solid var(--danger-border)', borderRadius: 'var(--radius-md)', color: 'var(--danger)', marginBottom: '20px' }}>
+          {error}
+        </div>
+      )}
 
       {loading && providers.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>Loading providers...</div>
+        <div style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)' }}>
+          <IconZap size={20} class="text-muted" style={{ animation: 'spin 1.5s linear infinite', margin: '0 auto 12px' }} />
+          <div>Loading providers...</div>
+        </div>
+      ) : providers.length === 0 ? (
+        <EmptyState
+          icon={<IconCloud size={28} />}
+          title="No providers registered"
+          description="Register upstream AI providers to route inference requests."
+          action={
+            <button class="btn btn-primary" onClick={() => setShowAddModal(true)}>
+              <IconPlus size={14} />
+              <span>Add First Provider Key</span>
+            </button>
+          }
+        />
       ) : (
         providers.map(p => (
           <div class="panel" key={p.id}>
             <div class="panel-header">
-              <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <span class="panel-title">{p.name}</span>
-                <span class="code-inline" style={{ marginLeft: '10px' }}>id: {p.id}</span>
+                <span class="code-inline">{p.id}</span>
               </div>
-              <span class={`badge ${p.enabled ? 'badge-success' : 'badge-muted'}`}>
+              <Badge variant={p.enabled ? 'success' : 'muted'}>
                 {p.enabled ? 'Enabled' : 'Disabled'}
-              </span>
+              </Badge>
             </div>
 
             <div class="table-wrapper">
@@ -137,44 +180,60 @@ export function ProvidersView() {
                 <tbody>
                   {(!p.keys || p.keys.length === 0) ? (
                     <tr>
-                      <td colSpan={6} style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>
-                        No configured keys for {p.name}.
+                      <td colSpan={6} style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                        No configured keys for {p.name}. Click "Add Provider Key" above to add one.
                       </td>
                     </tr>
                   ) : (
                     p.keys.map(k => (
                       <tr key={k.id}>
-                        <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{k.display_name}</td>
-                        <td><span class="code-inline">{k.key_prefix}</span></td>
-                        <td>{formatUSD(k.starting_balance_micro_usd)}</td>
                         <td>
-                          <span class={`badge badge-${k.status === 'active' ? 'success' : 'danger'}`}>
-                            {k.status}
-                          </span>
+                          <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{k.display_name}</div>
                           {k.safe_last_error && (
-                            <div style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '4px' }}>
-                              {k.safe_last_error}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--danger)', fontSize: '11.5px', marginTop: '3px' }}>
+                              <IconAlertTriangle size={12} />
+                              <span>{k.safe_last_error}</span>
                             </div>
                           )}
                         </td>
-                        <td>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'Never'}</td>
+                        <td>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                            <span class="code-inline">{k.key_prefix}</span>
+                            <CopyButton text={k.key_prefix} size="xs" />
+                          </div>
+                        </td>
+                        <td style={{ fontFamily: 'var(--font-mono)' }}>{formatUSD(k.starting_balance_micro_usd)}</td>
+                        <td>
+                          <Badge variant={k.status === 'active' ? 'success' : k.status === 'exhausted' ? 'warning' : 'danger'}>
+                            {k.status}
+                          </Badge>
+                        </td>
+                        <td style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                          {k.last_used_at ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              <IconClock size={12} />
+                              <span>{new Date(k.last_used_at).toLocaleDateString()} {new Date(k.last_used_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
+                          ) : (
+                            'Never'
+                          )}
+                        </td>
                         <td style={{ textAlign: 'right' }}>
-                          <button
-                            class="btn btn-secondary btn-sm"
-                            style={{ marginRight: '6px' }}
-                            onClick={() => {
-                              setSelectedKeyId(k.id);
-                              setShowAdjustModal(true);
-                            }}
-                          >
-                            Adjust Balance
-                          </button>
-                          <button
-                            class={`btn ${k.status === 'active' ? 'btn-danger' : 'btn-primary'} btn-sm`}
-                            onClick={() => handleToggleStatus(k.id, k.status)}
-                          >
-                            {k.status === 'active' ? 'Disable' : 'Enable'}
-                          </button>
+                          <div style={{ display: 'inline-flex', gap: '6px', justifyContent: 'flex-end' }}>
+                            <button
+                              class="btn btn-secondary btn-sm"
+                              onClick={() => openAdjustModal(k.id, k.display_name)}
+                              title="Adjust starting balance or add credit"
+                            >
+                              Adjust Balance
+                            </button>
+                            <button
+                              class={`btn btn-sm ${k.status === 'active' ? 'btn-danger-subtle' : 'btn-secondary'}`}
+                              onClick={() => handleToggleStatus(k.id, k.status)}
+                            >
+                              {k.status === 'active' ? 'Disable' : 'Enable'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -187,121 +246,124 @@ export function ProvidersView() {
       )}
 
       {/* Add Provider Key Modal */}
-      {showAddModal && (
-        <div class="modal-overlay" onClick={() => setShowAddModal(false)}>
-          <div class="modal-content" onClick={e => e.stopPropagation()}>
-            <form onSubmit={handleCreateKey}>
-              <div class="modal-header">
-                <div class="panel-title">Add Provider Key</div>
-                <button type="button" class="btn btn-secondary btn-sm" onClick={() => setShowAddModal(false)}>✕</button>
-              </div>
-              <div class="modal-body">
-                <div class="form-group">
-                  <label class="form-label">Provider</label>
-                  <select
-                    class="form-input"
-                    value={formProviderId}
-                    onChange={(e: any) => {
-                      setFormProviderId(e.target.value);
-                      if (e.target.value === 'fireworks') setFormStartingBalanceUSD('6.00');
-                      else setFormStartingBalanceUSD('1.00');
-                    }}
-                  >
-                    <option value="fireworks">Fireworks AI</option>
-                    <option value="siliconflow">SiliconFlow</option>
-                    <option value="novita">Novita AI</option>
-                    <option value="baseten">Baseten</option>
-                  </select>
-                </div>
-
-                <div class="form-group">
-                  <label class="form-label">Key Display Name</label>
-                  <input
-                    class="form-input"
-                    placeholder="e.g. Primary Fireworks Account"
-                    required
-                    value={formDisplayName}
-                    onInput={(e: any) => setFormDisplayName(e.target.value)}
-                  />
-                </div>
-
-                <div class="form-group">
-                  <label class="form-label">Starting Balance (USD)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    class="form-input"
-                    required
-                    value={formStartingBalanceUSD}
-                    onInput={(e: any) => setFormStartingBalanceUSD(e.target.value)}
-                  />
-                </div>
-
-                <div class="form-group">
-                  <label class="form-label">Secret API Key</label>
-                  <input
-                    type="password"
-                    class="form-input"
-                    placeholder="fw_..."
-                    required
-                    value={formSecret}
-                    onInput={(e: any) => setFormSecret(e.target.value)}
-                  />
-                  <small style={{ color: 'var(--text-muted)', fontSize: '11px', marginTop: '4px' }}>
-                    Encrypted at rest with your master key. Never visible after submission.
-                  </small>
-                </div>
-              </div>
-              <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" onClick={() => setShowAddModal(false)}>Cancel</button>
-                <button type="submit" class="btn btn-primary">Save Encrypted Key</button>
-              </div>
-            </form>
+      <Modal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        title="Add Upstream Provider Key"
+        footer={
+          <>
+            <button type="button" class="btn btn-ghost" onClick={() => setShowAddModal(false)}>
+              Cancel
+            </button>
+            <button type="submit" form="add-key-form" class="btn btn-primary" disabled={submitting}>
+              {submitting ? 'Saving...' : 'Save Encrypted Key'}
+            </button>
+          </>
+        }
+      >
+        <form id="add-key-form" onSubmit={handleCreateKey}>
+          <div class="form-group">
+            <label class="form-label">Provider</label>
+            <select
+              class="form-select"
+              value={formProviderId}
+              onChange={(e: any) => setFormProviderId(e.target.value)}
+            >
+              <option value="fireworks">Fireworks AI</option>
+              <option value="together">Together AI</option>
+              <option value="groq">Groq</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="deepinfra">DeepInfra</option>
+              <option value="openai">OpenAI</option>
+            </select>
           </div>
-        </div>
-      )}
+
+          <div class="form-group">
+            <label class="form-label">Display Name / Label</label>
+            <input
+              type="text"
+              class="form-input"
+              required
+              placeholder="e.g. Primary Fireworks Key"
+              value={formDisplayName}
+              onInput={(e: any) => setFormDisplayName(e.target.value)}
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Upstream Secret API Key</label>
+            <input
+              type="password"
+              class="form-input"
+              required
+              placeholder="fw_... or sk-..."
+              value={formSecret}
+              onInput={(e: any) => setFormSecret(e.target.value)}
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">
+              <span>Initial Free / Funded Balance (USD)</span>
+              <span style={{ fontSize: '11px', color: 'var(--text-subtle)' }}>Default: $6.00</span>
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              class="form-input"
+              required
+              value={formStartingBalanceUSD}
+              onInput={(e: any) => setFormStartingBalanceUSD(e.target.value)}
+            />
+          </div>
+        </form>
+      </Modal>
 
       {/* Adjust Balance Modal */}
-      {showAdjustModal && (
-        <div class="modal-overlay" onClick={() => setShowAdjustModal(false)}>
-          <div class="modal-content" onClick={e => e.stopPropagation()}>
-            <form onSubmit={handleAddAdjustment}>
-              <div class="modal-header">
-                <div class="panel-title">Add Balance Adjustment</div>
-                <button type="button" class="btn btn-secondary btn-sm" onClick={() => setShowAdjustModal(false)}>✕</button>
-              </div>
-              <div class="modal-body">
-                <div class="form-group">
-                  <label class="form-label">Adjustment Amount (USD)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    class="form-input"
-                    placeholder="e.g. 5.00 or -2.50"
-                    required
-                    value={adjustAmountUSD}
-                    onInput={(e: any) => setAdjustAmountUSD(e.target.value)}
-                  />
-                </div>
-                <div class="form-group">
-                  <label class="form-label">Adjustment Note / Reason</label>
-                  <input
-                    class="form-input"
-                    placeholder="e.g. Purchased $5 promotional credits"
-                    required
-                    value={adjustNote}
-                    onInput={(e: any) => setAdjustNote(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" onClick={() => setShowAdjustModal(false)}>Cancel</button>
-                <button type="submit" class="btn btn-primary">Save Adjustment</button>
-              </div>
-            </form>
+      <Modal
+        isOpen={showAdjustModal}
+        onClose={() => setShowAdjustModal(false)}
+        title={`Adjust Balance: ${selectedKeyName}`}
+        footer={
+          <>
+            <button type="button" class="btn btn-ghost" onClick={() => setShowAdjustModal(false)}>
+              Cancel
+            </button>
+            <button type="submit" form="adjust-balance-form" class="btn btn-primary" disabled={submitting}>
+              {submitting ? 'Applying...' : 'Apply Adjustment'}
+            </button>
+          </>
+        }
+      >
+        <form id="adjust-balance-form" onSubmit={handleAddAdjustment}>
+          <div class="form-group">
+            <label class="form-label">Adjustment Amount in USD</label>
+            <input
+              type="number"
+              step="0.01"
+              class="form-input"
+              required
+              placeholder="e.g. 5.00 or -2.50"
+              value={adjustAmountUSD}
+              onInput={(e: any) => setAdjustAmountUSD(e.target.value)}
+            />
+            <span style={{ fontSize: '11.5px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              Positive values add funds/promotional credits. Negative values reduce starting balance.
+            </span>
           </div>
-        </div>
-      )}
+
+          <div class="form-group">
+            <label class="form-label">Note / Rationale</label>
+            <input
+              type="text"
+              class="form-input"
+              placeholder="e.g. Monthly free credit renewal"
+              value={adjustNote}
+              onInput={(e: any) => setAdjustNote(e.target.value)}
+            />
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

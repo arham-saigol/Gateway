@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'preact/hooks';
 import { apiRequest } from '../api';
 import type { GatewayKey } from '../types';
+import { IconPlus, IconKey, IconShield, IconClock, IconTrash, IconZap } from '../components/Icons';
+import { Badge, CopyButton, Modal, Callout, EmptyState } from '../components/UI';
 
 export function GatewayKeysView() {
   const [keys, setKeys] = useState<GatewayKey[]>([]);
@@ -10,7 +12,7 @@ export function GatewayKeysView() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [keyName, setKeyName] = useState('');
   const [createdSecret, setCreatedSecret] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [creatingKey, setCreatingKey] = useState(false);
 
   useEffect(() => {
     loadKeys();
@@ -31,6 +33,7 @@ export function GatewayKeysView() {
 
   async function handleCreateKey(e: any) {
     e.preventDefault();
+    setCreatingKey(true);
     try {
       const res = await apiRequest<{ id: string; key: string; prefix: string; name: string }>('/api/gateway-keys', {
         method: 'POST',
@@ -41,11 +44,13 @@ export function GatewayKeysView() {
       loadKeys();
     } catch (err: any) {
       alert(err.message);
+    } finally {
+      setCreatingKey(false);
     }
   }
 
-  async function handleRevokeKey(keyId: string) {
-    if (!confirm('Are you sure you want to revoke this API key? Applications using it will immediately be denied access.')) {
+  async function handleRevokeKey(keyId: string, name: string) {
+    if (!confirm(`Are you sure you want to revoke "${name}"? Client applications using this key will immediately receive 401 Unauthorized.`)) {
       return;
     }
 
@@ -59,29 +64,45 @@ export function GatewayKeysView() {
     }
   }
 
-  function handleCopy() {
-    navigator.clipboard.writeText(createdSecret);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  function handleCloseCreateModal() {
+    setShowCreateModal(false);
+    setCreatedSecret('');
   }
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+      <div class="page-header">
         <div>
-          <h2 style={{ fontSize: '18px', fontWeight: 600 }}>Gateway API Keys</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
-            Issue client authentication keys used to access public OpenAI-compatible endpoints.
-          </p>
+          <h1 class="page-title">Gateway API Keys</h1>
+          <p class="page-subtitle">Generate client bearer keys for apps to authenticate against OpenAI-compatible endpoints.</p>
         </div>
         <button class="btn btn-primary" onClick={() => { setCreatedSecret(''); setShowCreateModal(true); }}>
-          + Create Gateway Key
+          <IconPlus size={14} />
+          <span>Create Gateway Key</span>
         </button>
       </div>
 
-      {error && <div style={{ padding: '16px', color: 'var(--danger)', marginBottom: '16px' }}>{error}</div>}
+      <Callout>
+        <strong>OpenAI-Compatible Seam:</strong> Pass your gateway keys via <span class="code-inline">Authorization: Bearer &lt;key&gt;</span> to <span class="code-inline">/v1/chat/completions</span> or <span class="code-inline">/v1/models</span>.
+      </Callout>
+
+      {error && (
+        <div style={{ padding: '14px 18px', backgroundColor: 'var(--danger-bg)', border: '1px solid var(--danger-border)', borderRadius: 'var(--radius-md)', color: 'var(--danger)', marginBottom: '20px' }}>
+          {error}
+        </div>
+      )}
 
       <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <IconKey size={16} />
+            <span>Active Client API Keys</span>
+          </div>
+          <Badge variant="neutral" withDot={false}>
+            {keys.filter(k => k.status === 'active').length} Active
+          </Badge>
+        </div>
+
         <div class="table-wrapper">
           <table>
             <thead>
@@ -95,29 +116,71 @@ export function GatewayKeysView() {
               </tr>
             </thead>
             <tbody>
-              {(!keys || keys.length === 0) ? (
+              {loading && keys.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)' }}>
-                    {loading ? 'Loading gateway keys...' : 'No gateway keys issued yet. Click Create Gateway Key above.'}
+                  <td colSpan={6} style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+                    <IconZap size={20} class="text-muted" style={{ animation: 'spin 1.5s linear infinite', margin: '0 auto 8px' }} />
+                    <div>Loading keys...</div>
+                  </td>
+                </tr>
+              ) : keys.length === 0 ? (
+                <tr>
+                  <td colSpan={6} style={{ padding: 0 }}>
+                    <EmptyState
+                      icon={<IconKey size={24} />}
+                      title="No gateway keys created yet"
+                      description="Create an API key to allow your applications to query models through the gateway."
+                      action={
+                        <button class="btn btn-primary btn-sm" onClick={() => { setCreatedSecret(''); setShowCreateModal(true); }}>
+                          <IconPlus size={13} />
+                          <span>Create Gateway Key</span>
+                        </button>
+                      }
+                    />
                   </td>
                 </tr>
               ) : (
                 keys.map(k => (
                   <tr key={k.id}>
-                    <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{k.name}</td>
-                    <td><span class="code-inline">{k.key_prefix}</span></td>
                     <td>
-                      <span class={`badge badge-${k.status === 'active' ? 'success' : 'danger'}`}>
-                        {k.status}
-                      </span>
+                      <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{k.name}</div>
                     </td>
-                    <td>{new Date(k.created_at).toLocaleString()}</td>
-                    <td>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'Never'}</td>
+                    <td>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                        <span class="code-inline">{k.key_prefix}</span>
+                        <CopyButton text={k.key_prefix} size="xs" />
+                      </div>
+                    </td>
+                    <td>
+                      <Badge variant={k.status === 'active' ? 'success' : 'danger'}>
+                        {k.status}
+                      </Badge>
+                    </td>
+                    <td style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                      {new Date(k.created_at).toLocaleDateString()} {new Date(k.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                      {k.last_used_at ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <IconClock size={12} />
+                          <span>{new Date(k.last_used_at).toLocaleDateString()} {new Date(k.last_used_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      ) : (
+                        'Never'
+                      )}
+                    </td>
                     <td style={{ textAlign: 'right' }}>
-                      {k.status === 'active' && (
-                        <button class="btn btn-danger btn-sm" onClick={() => handleRevokeKey(k.id)}>
-                          Revoke
+                      {k.status === 'active' ? (
+                        <button
+                          class="btn btn-danger-subtle btn-sm"
+                          onClick={() => handleRevokeKey(k.id, k.name)}
+                          title="Revoke key"
+                        >
+                          <IconTrash size={12} />
+                          <span>Revoke</span>
                         </button>
+                      ) : (
+                        <span style={{ fontSize: '12px', color: 'var(--text-subtle)' }}>Revoked</span>
                       )}
                     </td>
                   </tr>
@@ -129,60 +192,63 @@ export function GatewayKeysView() {
       </div>
 
       {/* Create Gateway Key Modal */}
-      {showCreateModal && (
-        <div class="modal-overlay" onClick={() => setShowCreateModal(false)}>
-          <div class="modal-content" onClick={e => e.stopPropagation()}>
-            {createdSecret ? (
-              <div>
-                <div class="modal-header">
-                  <div class="panel-title" style={{ color: 'var(--success)' }}>Key Created Successfully</div>
-                  <button type="button" class="btn btn-secondary btn-sm" onClick={() => setShowCreateModal(false)}>✕</button>
-                </div>
-                <div class="modal-body">
-                  <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                    Please copy this secret key now. For security, it will <strong>never be shown again</strong>.
-                  </p>
+      <Modal
+        isOpen={showCreateModal}
+        onClose={handleCloseCreateModal}
+        title={createdSecret ? 'Gateway Key Generated' : 'Create Gateway API Key'}
+        footer={
+          createdSecret ? (
+            <button type="button" class="btn btn-primary" onClick={handleCloseCreateModal}>
+              I have safely copied my key
+            </button>
+          ) : (
+            <>
+              <button type="button" class="btn btn-ghost" onClick={handleCloseCreateModal}>
+                Cancel
+              </button>
+              <button type="submit" form="create-key-form" class="btn btn-primary" disabled={creatingKey}>
+                {creatingKey ? 'Creating...' : 'Create Key'}
+              </button>
+            </>
+          )
+        }
+      >
+        {createdSecret ? (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--success)', marginBottom: '12px', fontSize: '13px', fontWeight: 600 }}>
+              <IconShield size={16} />
+              <span>Key successfully created!</span>
+            </div>
 
-                  <div class="key-reveal-box">
-                    <span class="code-inline" style={{ fontSize: '13px', wordBreak: 'break-all' }}>
-                      {createdSecret}
-                    </span>
-                    <button class="btn btn-secondary btn-sm" onClick={handleCopy}>
-                      {copied ? 'Copied!' : 'Copy'}
-                    </button>
-                  </div>
-                </div>
-                <div class="modal-footer">
-                  <button class="btn btn-primary" onClick={() => setShowCreateModal(false)}>Done</button>
-                </div>
-              </div>
-            ) : (
-              <form onSubmit={handleCreateKey}>
-                <div class="modal-header">
-                  <div class="panel-title">Create Gateway Key</div>
-                  <button type="button" class="btn btn-secondary btn-sm" onClick={() => setShowCreateModal(false)}>✕</button>
-                </div>
-                <div class="modal-body">
-                  <div class="form-group">
-                    <label class="form-label">Client / Description Name</label>
-                    <input
-                      class="form-input"
-                      placeholder="e.g. VSCode Extension or Web App Client"
-                      required
-                      value={keyName}
-                      onInput={(e: any) => setKeyName(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div class="modal-footer">
-                  <button type="button" class="btn btn-secondary" onClick={() => setShowCreateModal(false)}>Cancel</button>
-                  <button type="submit" class="btn btn-primary">Generate Secret Key</button>
-                </div>
-              </form>
-            )}
+            <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', marginBottom: '16px', lineHeight: 1.5 }}>
+              Please copy your secret API key below and store it securely. For security reasons, <strong>you will not be able to view this key again</strong>.
+            </p>
+
+            <div class="key-reveal-box">
+              <div class="key-secret-text">{createdSecret}</div>
+              <CopyButton text={createdSecret} label="Copy" size="sm" />
+            </div>
           </div>
-        </div>
-      )}
+        ) : (
+          <form id="create-key-form" onSubmit={handleCreateKey}>
+            <div class="form-group">
+              <label class="form-label">Key Name / Client Description</label>
+              <input
+                type="text"
+                class="form-input"
+                required
+                autoFocus
+                placeholder="e.g. Next.js Production App or Arham CLI"
+                value={keyName}
+                onInput={(e: any) => setKeyName(e.target.value)}
+              />
+            </div>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              Keys are generated with cryptographically secure random bytes and hashed with argon2id for fast, secure lookup.
+            </p>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 }

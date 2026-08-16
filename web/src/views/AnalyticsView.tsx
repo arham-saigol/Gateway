@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'preact/hooks';
 import { apiRequest, formatUSD } from '../api';
 import type { DailyStat } from '../types';
+import { IconRefresh, IconAnalytics, IconZap } from '../components/Icons';
+import { MetricCard, Badge, EmptyState } from '../components/UI';
 
 export function AnalyticsView() {
   const [stats, setStats] = useState<DailyStat[]>([]);
@@ -24,23 +26,58 @@ export function AnalyticsView() {
     }
   }
 
+  const totalRequests = stats.reduce((acc, s) => acc + s.total_requests, 0);
+  const totalTokens = stats.reduce((acc, s) => acc + s.input_tokens + s.cached_input_tokens + s.output_tokens, 0);
+  const totalCost = stats.reduce((acc, s) => acc + s.cost_micro_usd, 0);
+
   return (
     <div>
-      <div style={{ marginBottom: '24px' }}>
-        <h2 style={{ fontSize: '18px', fontWeight: 600 }}>Usage & Cost Analytics</h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
-          Durable daily rollup aggregates by public model, token volume, and exact calculated spend.
-        </p>
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Analytics</h1>
+          <p class="page-subtitle">Durable daily rollups, token volume aggregates, and exact model cost accounting.</p>
+        </div>
+        <button class="btn btn-secondary btn-sm" onClick={loadAnalytics} disabled={loading}>
+          <IconRefresh size={13} class={loading ? 'animate-spin' : ''} />
+          <span>{loading ? 'Refreshing...' : 'Refresh'}</span>
+        </button>
       </div>
 
-      {error && <div style={{ padding: '16px', color: 'var(--danger)', marginBottom: '16px' }}>{error}</div>}
+      {stats.length > 0 && (
+        <div class="stats-grid">
+          <MetricCard
+            label="Aggregated Requests"
+            value={totalRequests.toLocaleString()}
+            subtext="Across recorded history"
+          />
+          <MetricCard
+            label="Total Tokens Processed"
+            value={totalTokens.toLocaleString()}
+            subtext="Input + Cached + Output"
+          />
+          <MetricCard
+            label="Total Recorded Spend"
+            value={formatUSD(totalCost)}
+            subtext="Exact token pricing sum"
+          />
+        </div>
+      )}
+
+      {error && (
+        <div style={{ padding: '14px 18px', backgroundColor: 'var(--danger-bg)', border: '1px solid var(--danger-border)', borderRadius: 'var(--radius-md)', color: 'var(--danger)', marginBottom: '20px' }}>
+          {error}
+        </div>
+      )}
 
       <div class="panel">
         <div class="panel-header">
-          <span class="panel-title">Daily Model Aggregates</span>
-          <button class="btn btn-secondary btn-sm" onClick={loadAnalytics} disabled={loading}>
-            {loading ? 'Refreshing...' : 'Refresh'}
-          </button>
+          <div class="panel-title">
+            <IconAnalytics size={16} />
+            <span>Daily Model Rollup Records</span>
+          </div>
+          <Badge variant="neutral" withDot={false}>
+            {stats.length} Days Recorded
+          </Badge>
         </div>
 
         <div class="table-wrapper">
@@ -59,24 +96,49 @@ export function AnalyticsView() {
               </tr>
             </thead>
             <tbody>
-              {stats.length === 0 ? (
+              {loading && stats.length === 0 ? (
                 <tr>
-                  <td colSpan={9} style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)' }}>
-                    {loading ? 'Loading analytics...' : 'No recorded traffic yet.'}
+                  <td colSpan={9} style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+                    <IconZap size={20} class="text-muted" style={{ animation: 'spin 1.5s linear infinite', margin: '0 auto 8px' }} />
+                    <div>Loading analytics rollups...</div>
+                  </td>
+                </tr>
+              ) : stats.length === 0 ? (
+                <tr>
+                  <td colSpan={9} style={{ padding: 0 }}>
+                    <EmptyState
+                      icon={<IconAnalytics size={24} />}
+                      title="No traffic recorded yet"
+                      description="Daily analytics will automatically compute and display here once requests pass through the gateway."
+                    />
                   </td>
                 </tr>
               ) : (
                 stats.map((s, idx) => (
                   <tr key={idx}>
-                    <td style={{ fontWeight: 600 }}>{s.date_utc}</td>
+                    <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{s.date_utc}</td>
                     <td><span class="code-inline">{s.public_model_id}</span></td>
-                    <td>{s.total_requests}</td>
-                    <td style={{ color: 'var(--success)' }}>{s.success_requests}</td>
-                    <td style={{ color: s.failed_requests > 0 ? 'var(--danger)' : 'var(--text-muted)' }}>{s.failed_requests}</td>
-                    <td>{s.input_tokens.toLocaleString()}</td>
-                    <td>{s.cached_input_tokens.toLocaleString()}</td>
-                    <td>{s.output_tokens.toLocaleString()}</td>
-                    <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{formatUSD(s.cost_micro_usd)}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)' }}>{s.total_requests.toLocaleString()}</td>
+                    <td>
+                      <Badge variant="success" withDot={false}>
+                        {s.success_requests.toLocaleString()}
+                      </Badge>
+                    </td>
+                    <td>
+                      {s.failed_requests > 0 ? (
+                        <Badge variant="danger" withDot={false}>
+                          {s.failed_requests.toLocaleString()}
+                        </Badge>
+                      ) : (
+                        <span style={{ color: 'var(--text-subtle)', fontSize: '12px' }}>0</span>
+                      )}
+                    </td>
+                    <td style={{ fontFamily: 'var(--font-mono)' }}>{s.input_tokens.toLocaleString()}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)' }}>{s.cached_input_tokens.toLocaleString()}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)' }}>{s.output_tokens.toLocaleString()}</td>
+                    <td style={{ fontWeight: 600, fontFamily: 'var(--font-mono)', color: '#ffffff' }}>
+                      {formatUSD(s.cost_micro_usd)}
+                    </td>
                   </tr>
                 ))
               )}
