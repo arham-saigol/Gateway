@@ -1,0 +1,6 @@
+interface:
+  display_name: "Babysit"
+  short_description: "Watch and address PR review-bot findings"
+  default_prompt: "Use $babysit to monitor and repair the current pull request until its latest commit has no valid review-bot findings."
+policy:
+  allow_implicit_invocation: false

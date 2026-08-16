@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prune"
+  short_description: "Review code for complexity that can be cut"
+  default_prompt: "Use $prune to review this code for over-engineering and identify what can be cut or simplified."

@@ -1,0 +1,6 @@
+interface:
+  display_name: "To Prompt"
+  short_description: "Save the finalized discussion as an agent prompt"
+  default_prompt: "Use $to-prompt to turn our finalized discussion into a prompt for a capable autonomous agent."
+policy:
+  allow_implicit_invocation: false

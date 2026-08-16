@@ -1,0 +1,333 @@
+package publicapi_test
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"arham-gateway/internal/auth"
+	"arham-gateway/internal/config"
+	"arham-gateway/internal/crypto"
+	"arham-gateway/internal/database"
+	"arham-gateway/internal/publicapi"
+	"arham-gateway/internal/routing"
+)
+
+func setupTestEnvironment(t *testing.T) (*database.DB, []byte, string, *routing.Router, http.Handler) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "gateway.db")
+
+	db, err := database.Open(dbPath, 5000)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	_ = db.Migrate()
+	_ = db.SeedDefaults()
+
+	masterKey, _ := crypto.GenerateRandomBytes(32)
+
+	// Create a Gateway API Key
+	rawKey, prefix, hash, _ := auth.GenerateGatewayKey("test-client")
+	_ = db.CreateGatewayKey(database.GatewayKey{
+		ID:        "gw-key-1",
+		KeyHash:   hash,
+		KeyPrefix: prefix,
+		Name:      "test-client",
+		Status:    "active",
+		CreatedAt: time.Now().UTC(),
+	})
+
+	cfg := config.DefaultConfig()
+	router := routing.NewRouter(db, masterKey, &cfg)
+
+	handler := publicapi.NewHandler(db, router, &cfg)
+	return db, masterKey, rawKey, router, handler
+}
+
+func TestHealthAndReadiness(t *testing.T) {
+	_, _, _, _, handler := setupTestEnvironment(t)
+
+	// GET /healthz
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected /healthz to return 200, got %d", rec.Code)
+	}
+
+	// GET /readyz
+	reqReady := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	recReady := httptest.NewRecorder()
+	handler.ServeHTTP(recReady, reqReady)
+
+	if recReady.Code != http.StatusOK {
+		t.Errorf("expected /readyz to return 200, got %d", recReady.Code)
+	}
+}
+
+func TestListModelsOnlyExposesPublicAliases(t *testing.T) {
+	_, _, rawKey, _, handler := setupTestEnvironment(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode models response: %v", err)
+	}
+
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected exactly 2 models, got %d", len(resp.Data))
+	}
+
+	for _, m := range resp.Data {
+		if m.ID != "deepseek-v4-flash" && m.ID != "deepseek-v4-flash-fast" {
+			t.Errorf("leaked non-public model ID: %s", m.ID)
+		}
+		if m.OwnedBy != "arham" {
+			t.Errorf("expected owned_by 'arham', got '%s'", m.OwnedBy)
+		}
+	}
+}
+
+func TestChatCompletionsAuthenticationAndValidation(t *testing.T) {
+	_, _, rawKey, _, handler := setupTestEnvironment(t)
+
+	// 1. Missing auth
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 on missing auth, got %d", rec.Code)
+	}
+
+	// 2. Reject upstream model ID directly
+	reqBadModel := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"accounts/fireworks/models/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`)))
+	reqBadModel.Header.Set("Authorization", "Bearer "+rawKey)
+	recBadModel := httptest.NewRecorder()
+	handler.ServeHTTP(recBadModel, reqBadModel)
+	if recBadModel.Code != http.StatusBadRequest && recBadModel.Code != http.StatusNotFound {
+		t.Errorf("expected 400/404 for upstream model ID, got %d", recBadModel.Code)
+	}
+
+	// 3. Reject conflicting max_tokens and max_completion_tokens
+	maxTokens := 100
+	maxCompletion := 100
+	conflictBody, _ := json.Marshal(map[string]any{
+		"model":                 "deepseek-v4-flash",
+		"messages":              []map[string]string{{"role": "user", "content": "hi"}},
+		"max_tokens":            maxTokens,
+		"max_completion_tokens": maxCompletion,
+	})
+	reqConflict := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(conflictBody))
+	reqConflict.Header.Set("Authorization", "Bearer "+rawKey)
+	recConflict := httptest.NewRecorder()
+	handler.ServeHTTP(recConflict, reqConflict)
+	if recConflict.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 when both max_tokens and max_completion_tokens are provided, got %d", recConflict.Code)
+	}
+}
+
+func TestChatCompletionsNonStreamingExecution(t *testing.T) {
+	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
+
+	// Create mock upstream
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "up-secret-id",
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   "accounts/fireworks/models/deepseek-v4-flash",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "Normalized assistant response",
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens":     20,
+				"completion_tokens": 10,
+				"total_tokens":      30,
+			},
+		})
+	}))
+	defer mockUpstream.Close()
+
+	// Register custom adapter for fireworks pointing to mockUpstream
+	router.RegisterAdapter(publicapi.NewCustomMockAdapter("fireworks", "Fireworks AI", mockUpstream.URL))
+
+	// Add a fireworks key to DB
+	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-fw-mock",
+		ProviderID:              "fireworks",
+		EncryptedSecret:         encSecret,
+		DisplayName:             "Fireworks Mock",
+		KeyPrefix:               "fw_mock...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Hello!"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body)))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
+		} `json:"usage"`
+	}
+
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Preserves public model alias
+	if resp.Model != "deepseek-v4-flash" {
+		t.Errorf("expected model 'deepseek-v4-flash', got '%s'", resp.Model)
+	}
+	// Gateway-owned ID prefix
+	if !strings.HasPrefix(resp.ID, "chatcmpl-arham-") {
+		t.Errorf("expected gateway-owned ID prefix chatcmpl-arham-, got '%s'", resp.ID)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "Normalized assistant response" {
+		t.Errorf("unexpected content: %+v", resp.Choices)
+	}
+	if resp.Usage.PromptTokens != 20 || resp.Usage.CompletionTokens != 10 {
+		t.Errorf("unexpected usage: %+v", resp.Usage)
+	}
+}
+
+func TestChatCompletionsStreamingExecution(t *testing.T) {
+	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
+
+	// Create mock streaming upstream
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+
+		w.Write([]byte("data: {\"id\":\"up-chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Streamed\"},\"finish_reason\":null}]}\n\n"))
+		flusher.Flush()
+		w.Write([]byte("data: {\"id\":\"up-chunk-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" reply\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"total_tokens\":14}}\n\n"))
+		flusher.Flush()
+		w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer mockUpstream.Close()
+
+	router.RegisterAdapter(publicapi.NewCustomMockAdapter("fireworks", "Fireworks AI", mockUpstream.URL))
+
+	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-fw-mock-stream",
+		ProviderID:              "fireworks",
+		EncryptedSecret:         encSecret,
+		DisplayName:             "Fireworks Stream Mock",
+		KeyPrefix:               "fw_mock...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Stream me"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body)))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	scanner := bufio.NewScanner(rec.Body)
+	var chunks []string
+	var seenDone bool
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				seenDone = true
+			} else {
+				chunks = append(chunks, data)
+			}
+		}
+	}
+
+	if !seenDone {
+		t.Errorf("streaming response missing [DONE]")
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("no chunks received")
+	}
+
+	// Verify all chunks have same gateway-owned completion ID
+	var commonID string
+	for _, raw := range chunks {
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatalf("invalid chunk json: %v", err)
+		}
+		id := chunk["id"].(string)
+		if !strings.HasPrefix(id, "chatcmpl-arham-") {
+			t.Errorf("chunk leaked non-gateway ID: %s", id)
+		}
+		if commonID == "" {
+			commonID = id
+		} else if id != commonID {
+			t.Errorf("chunk ID changed across stream: was %s, now %s", commonID, id)
+		}
+		if chunk["model"].(string) != "deepseek-v4-flash" {
+			t.Errorf("chunk leaked model ID: %v", chunk["model"])
+		}
+	}
+}
