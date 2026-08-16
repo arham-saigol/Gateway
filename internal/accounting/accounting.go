@@ -1,10 +1,5 @@
 package accounting
 
-import (
-	"fmt"
-	"strings"
-)
-
 const (
 	TokensPerMillion = 1000000
 )
@@ -30,37 +25,4 @@ func CalculateAttemptCost(inputTokens, cachedInputTokens, outputTokens, inputRat
 
 	totalCost := inputCost + cachedCost + outputCost
 	return totalCost, true
-}
-
-// FormatMicroUSD formats an amount in micro-USD (1 USD = 1,000,000 micro-USD) into a human-readable USD string.
-func FormatMicroUSD(microUSD int64) string {
-	isNegative := false
-	if microUSD < 0 {
-		isNegative = true
-		microUSD = -microUSD
-	}
-
-	dollars := microUSD / 1000000
-	micros := microUSD % 1000000
-
-	var formatted string
-	if micros == 0 {
-		formatted = fmt.Sprintf("$%d.00", dollars)
-	} else if micros%10000 == 0 {
-		// Exactly two decimals
-		formatted = fmt.Sprintf("$%d.%02d", dollars, micros/10000)
-	} else {
-		// Trim trailing zeros after 2 decimal digits up to 6 digits
-		s := fmt.Sprintf("%06d", micros)
-		s = strings.TrimRight(s, "0")
-		if len(s) < 2 {
-			s = s + strings.Repeat("0", 2-len(s))
-		}
-		formatted = fmt.Sprintf("$%d.%s", dollars, s)
-	}
-
-	if isNegative {
-		return "-" + formatted
-	}
-	return formatted
 }

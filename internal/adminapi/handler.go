@@ -71,8 +71,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
-type authContextKey struct{}
-
 func (h *Handler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("arham_session")
@@ -262,7 +260,7 @@ func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.Conn().QueryRow(`
 		SELECT COUNT(1), COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0), COALESCE(AVG(total_duration_ms), 0)
 		FROM requests
-		WHERE created_at >= datetime('now', '-1 day')
+		WHERE datetime(created_at) >= datetime('now', '-1 day')
 	`).Scan(&total24hRequests, &success24hRequests, &avgLatency24h)
 
 	successRate := 100.0
@@ -383,6 +381,10 @@ func (h *Handler) handleCreateProviderKey(w http.ResponseWriter, r *http.Request
 	prefix := body.Secret
 	if len(prefix) > 8 {
 		prefix = prefix[:8] + "..."
+	} else if len(prefix) > 4 {
+		prefix = prefix[:4] + "..."
+	} else {
+		prefix = "***"
 	}
 
 	now := time.Now().UTC()

@@ -129,14 +129,6 @@ export function IconChevronDown({ size = 16, class: className = '', style }: Ico
   );
 }
 
-export function IconChevronRight({ size = 16, class: className = '', style }: IconProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class={className} style={style}>
-      <polyline points="9 18 15 12 9 6" />
-    </svg>
-  );
-}
-
 export function IconShield({ size = 16, class: className = '', style }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class={className} style={style}>

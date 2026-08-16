@@ -2,6 +2,7 @@
 gateway
 gateway.exe
 *.exe
+*.exe~
 
 # Database & Keys
 *.db

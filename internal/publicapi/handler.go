@@ -26,10 +26,6 @@ type Handler struct {
 	mux    *http.ServeMux
 }
 
-func NewCustomMockAdapter(id, name, url string) providers.ProviderAdapter {
-	return providers.NewGenericOpenAIAdapter(id, name, url, "Bearer")
-}
-
 func NewHandler(db *database.DB, router *routing.Router, cfg *config.Config) http.Handler {
 	h := &Handler{
 		db:     db,
@@ -208,10 +204,8 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 	maxRetries := h.cfg.Routing.MaxRetriesPerRequest
 	attemptedKeys := make(map[string]bool)
 	var lastErr error
-	var attemptCount int
 
 	for attemptSeq := 1; attemptSeq <= maxRetries+1; attemptSeq++ {
-		attemptCount = attemptSeq
 		target, err := h.router.SelectNextTarget(publicModel.ID, attemptedKeys)
 		if err != nil {
 			lastErr = err
@@ -341,7 +335,6 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 	}
 
 	// All attempts failed
-	_ = attemptCount
 	writeOpenAIError(w, http.StatusBadGateway, fmt.Sprintf("All upstream provider attempts failed: %v", lastErr), "api_error")
 }
 
@@ -398,7 +391,6 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 
-		var committed bool
 		var ttftMs *int64
 		var finalUsage *providers.Usage
 		var streamErr error
@@ -427,17 +419,17 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 				if err == nil {
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
 					flusher.Flush()
-					committed = true
 				}
 			}
 		}
 
-		// Send [DONE]
-		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		// Send [DONE] only if stream completed without error
+		if streamErr == nil {
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+			flusher.Flush()
+		}
 
 		attemptDuration := time.Since(attemptStart)
-		_ = committed
 
 		// Finalize accounting
 		var inTokens, cachedTokens, outTokens int64

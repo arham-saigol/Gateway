@@ -269,12 +269,9 @@ export function ProvidersView() {
               value={formProviderId}
               onChange={(e: any) => setFormProviderId(e.target.value)}
             >
-              <option value="fireworks">Fireworks AI</option>
-              <option value="together">Together AI</option>
-              <option value="groq">Groq</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="deepinfra">DeepInfra</option>
-              <option value="openai">OpenAI</option>
+              {providers.map(p => (
+                <option key={p.id} value={p.id}>{p.name} ({p.id})</option>
+              ))}
             </select>
           </div>
 

@@ -26,12 +26,7 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	return nil
 }
 
-func (d Duration) MarshalText() ([]byte, error) {
-	return []byte(time.Duration(d).String()), nil
-}
-
 var _ encoding.TextUnmarshaler = (*Duration)(nil)
-var _ encoding.TextMarshaler = (*Duration)(nil)
 
 type ServerConfig struct {
 	ListenAddr          string   `toml:"listen_addr"`

@@ -39,7 +39,7 @@ type ToolCall struct {
 
 type ChatMessage struct {
 	Role       string     `json:"role"`
-	Content    string     `json:"content"`
+	Content    any        `json:"content,omitempty"`
 	Name       string     `json:"name,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
@@ -85,7 +85,7 @@ type Usage struct {
 
 type ChoiceMessage struct {
 	Role      string     `json:"role"`
-	Content   string     `json:"content"`
+	Content   any        `json:"content"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 

@@ -132,12 +132,11 @@ func (db *DB) ListProviderKeys(providerID string) ([]ProviderKey, error) {
 	keys := make([]ProviderKey, 0)
 	for rows.Next() {
 		var k ProviderKey
-		var safeErr, lastUsed sql.NullString
+		var safeErr sql.NullString
 		var lastUsedTime sql.NullTime
 		if err := rows.Scan(&k.ID, &k.ProviderID, &k.EncryptedSecret, &k.DisplayName, &k.KeyPrefix, &k.StartingBalanceMicroUSD, &k.Status, &safeErr, &lastUsedTime, &k.CreatedAt, &k.UpdatedAt); err != nil {
 			return nil, err
 		}
-		_ = lastUsed
 		if safeErr.Valid {
 			k.SafeLastError = &safeErr.String
 		}
@@ -424,36 +423,6 @@ func (db *DB) UpdateGatewayKeyLastUsed(id string) error {
 }
 
 // Request and Attempt Recording + Rollup
-func (db *DB) RecordRequest(r RequestRecord) error {
-	_, err := db.conn.Exec(`
-		INSERT INTO requests (
-			id, public_model_id, gateway_key_id, status, error_category, stream,
-			ttft_ms, total_duration_ms, input_tokens, cached_input_tokens, output_tokens,
-			total_cost_micro_usd, usage_confidence, retry_count, failover_count, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, r.ID, r.PublicModelID, r.GatewayKeyID, r.Status, r.ErrorCategory, r.Stream,
-		r.TTFTMs, r.TotalDurationMs, r.InputTokens, r.CachedInputTokens, r.OutputTokens,
-		r.TotalCostMicroUSD, r.UsageConfidence, r.RetryCount, r.FailoverCount, r.CreatedAt)
-	return err
-}
-
-func (db *DB) RecordRequestAttempt(att RequestAttemptRecord) error {
-	_, err := db.conn.Exec(`
-		INSERT INTO request_attempts (
-			id, request_id, provider_id, provider_key_id, mapping_id, sequence,
-			status, http_status, error_category, ttft_ms, duration_ms,
-			input_tokens, cached_input_tokens, output_tokens,
-			input_rate_snapshot, cached_rate_snapshot, output_rate_snapshot,
-			total_cost_micro_usd, usage_confidence, aggregated_in_rollup, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, att.ID, att.RequestID, att.ProviderID, att.ProviderKeyID, att.MappingID, att.Sequence,
-		att.Status, att.HTTPStatus, att.ErrorCategory, att.TTFTMs, att.DurationMs,
-		att.InputTokens, att.CachedInputTokens, att.OutputTokens,
-		att.InputRateSnapshot, att.CachedRateSnapshot, att.OutputRateSnapshot,
-		att.TotalCostMicroUSD, att.UsageConfidence, att.AggregatedInRollup, att.CreatedAt)
-	return err
-}
-
 func (db *DB) FinalizeAttemptAndRollup(att RequestAttemptRecord, req RequestRecord) error {
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -553,7 +522,7 @@ func (db *DB) FinalizeAttemptAndRollup(att RequestAttemptRecord, req RequestReco
 			input_tokens, cached_input_tokens, output_tokens, known_cost_micro_usd, unknown_cost_attempts,
 			updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(date_utc, provider_key_id, mapping_id, gateway_key_id) DO UPDATE SET
+		ON CONFLICT(id) DO UPDATE SET
 			total_requests = total_requests + 1,
 			successful_requests = successful_requests + excluded.successful_requests,
 			failed_requests = failed_requests + excluded.failed_requests,

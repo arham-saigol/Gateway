@@ -186,6 +186,8 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 		startTime := time.Now()
 		var firstTokenSeen bool
 		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 10*1024*1024)
 
 		for scanner.Scan() {
 			select {
@@ -232,16 +234,24 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 				}
 			}
 
-			eventChan <- StreamEvent{
+			select {
+			case <-ctx.Done():
+				return
+			case eventChan <- StreamEvent{
 				Chunk:      &chunk,
 				HTTPStatus: resp.StatusCode,
 				TTFT:       ttft,
 				IsFirst:    isFirst,
+			}:
 			}
 		}
 
 		if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-			eventChan <- StreamEvent{Error: err, HTTPStatus: resp.StatusCode}
+			select {
+			case <-ctx.Done():
+				return
+			case eventChan <- StreamEvent{Error: err, HTTPStatus: resp.StatusCode}:
+			}
 		}
 	}()
 

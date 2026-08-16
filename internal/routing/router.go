@@ -40,7 +40,7 @@ type Router struct {
 	adapters    map[string]providers.ProviderAdapter
 	mu          sync.Mutex
 	cooldowns   map[string]time.Time
-	keyCounters map[string]int
+	keyCounters map[string]uint64
 }
 
 func NewRouter(db *database.DB, masterKey []byte, cfg *config.Config) *Router {
@@ -50,7 +50,7 @@ func NewRouter(db *database.DB, masterKey []byte, cfg *config.Config) *Router {
 		cfg:         cfg,
 		adapters:    make(map[string]providers.ProviderAdapter),
 		cooldowns:   make(map[string]time.Time),
-		keyCounters: make(map[string]int),
+		keyCounters: make(map[string]uint64),
 	}
 
 	// Register built-in adapters
@@ -154,7 +154,7 @@ func (r *Router) SelectNextTarget(publicModelID string, attemptedKeyIDs map[stri
 
 		// Select key via round-robin index
 		r.mu.Lock()
-		idx := r.keyCounters[route.ProviderID] % len(availableKeys)
+		idx := int(r.keyCounters[route.ProviderID] % uint64(len(availableKeys)))
 		r.keyCounters[route.ProviderID]++
 		r.mu.Unlock()
 

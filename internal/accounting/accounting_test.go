@@ -59,23 +59,3 @@ func TestUnknownUsageReturnsNilCost(t *testing.T) {
 		t.Errorf("expected negative input tokens to be rejected as invalid/unknown")
 	}
 }
-
-func TestFormatMicroUSD(t *testing.T) {
-	tests := []struct {
-		microUSD int64
-		expected string
-	}{
-		{6000000, "$6.00"},
-		{1500000, "$1.50"},
-		{672, "$0.000672"},
-		{0, "$0.00"},
-		{-500000, "-$0.50"},
-	}
-
-	for _, tc := range tests {
-		actual := accounting.FormatMicroUSD(tc.microUSD)
-		if actual != tc.expected {
-			t.Errorf("FormatMicroUSD(%d): expected %s, got %s", tc.microUSD, tc.expected, actual)
-		}
-	}
-}

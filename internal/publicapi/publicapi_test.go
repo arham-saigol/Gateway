@@ -15,6 +15,7 @@ import (
 	"arham-gateway/internal/config"
 	"arham-gateway/internal/crypto"
 	"arham-gateway/internal/database"
+	"arham-gateway/internal/providers"
 	"arham-gateway/internal/publicapi"
 	"arham-gateway/internal/routing"
 )
@@ -183,7 +184,7 @@ func TestChatCompletionsNonStreamingExecution(t *testing.T) {
 	defer mockUpstream.Close()
 
 	// Register custom adapter for fireworks pointing to mockUpstream
-	router.RegisterAdapter(publicapi.NewCustomMockAdapter("fireworks", "Fireworks AI", mockUpstream.URL))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockUpstream.URL, "Bearer"))
 
 	// Add a fireworks key to DB
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
@@ -263,7 +264,7 @@ func TestChatCompletionsStreamingExecution(t *testing.T) {
 	}))
 	defer mockUpstream.Close()
 
-	router.RegisterAdapter(publicapi.NewCustomMockAdapter("fireworks", "Fireworks AI", mockUpstream.URL))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockUpstream.URL, "Bearer"))
 
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
 	_ = db.CreateProviderKey(database.ProviderKey{
@@ -329,5 +330,118 @@ func TestChatCompletionsStreamingExecution(t *testing.T) {
 		if chunk["model"].(string) != "deepseek-v4-flash" {
 			t.Errorf("chunk leaked model ID: %v", chunk["model"])
 		}
+	}
+}
+
+func TestChatCompletionsNullAndMultimodalContent(t *testing.T) {
+	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
+
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "up-secret-id",
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   "accounts/fireworks/models/deepseek-v4-flash",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "Received complex content successfully",
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens":     15,
+				"completion_tokens": 5,
+				"total_tokens":      20,
+			},
+		})
+	}))
+	defer mockUpstream.Close()
+
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockUpstream.URL, "Bearer"))
+
+	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-fw-mock-complex",
+		ProviderID:              "fireworks",
+		EncryptedSecret:         encSecret,
+		DisplayName:             "Fireworks Complex Mock",
+		KeyPrefix:               "fw_mock...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	// Test body with content: null (tool call message) and array content (multimodal)
+	body := `{
+		"model": "deepseek-v4-flash",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "Describe image"}]},
+			{"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]},
+			{"role": "tool", "tool_call_id": "call_1", "content": "Result"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body)))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for null/multimodal content, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStreamingErrorDoesNotEmitDone(t *testing.T) {
+	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
+
+	// Mock upstream that sends a chunk then breaks with non-200/malformed stream
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+
+		w.Write([]byte("data: {\"id\":\"up-chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Chunk 1\"},\"finish_reason\":null}]}\n\n"))
+		flusher.Flush()
+
+		// Hijack / close connection abruptly to simulate upstream error
+		hj, ok := w.(http.Hijacker)
+		if ok {
+			conn, _, _ := hj.Hijack()
+			conn.Close()
+		}
+	}))
+	defer mockUpstream.Close()
+
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockUpstream.URL, "Bearer"))
+
+	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-fw-mock-stream-err",
+		ProviderID:              "fireworks",
+		EncryptedSecret:         encSecret,
+		DisplayName:             "Fireworks Stream Err Mock",
+		KeyPrefix:               "fw_mock...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Stream me"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body)))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// Since connection died midway, [DONE] should not be present
+	out := rec.Body.String()
+	if strings.Contains(out, "data: [DONE]") {
+		t.Errorf("expected stream with upstream error NOT to emit [DONE], got: %s", out)
 	}
 }

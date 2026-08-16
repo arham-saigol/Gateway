@@ -104,10 +104,6 @@ func New(configPath string) (*App, error) {
 	}, nil
 }
 
-func (a *App) DB() *database.DB {
-	return a.db
-}
-
 func (a *App) Run() error {
 	a.log.Info("starting Arham Gateway server",
 		"listen_addr", a.cfg.Server.ListenAddr,
