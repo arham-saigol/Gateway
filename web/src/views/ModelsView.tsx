@@ -22,7 +22,7 @@ export function ModelsView() {
     try {
       setLoading(true);
       const res = await apiRequest<PublicModelWithRoutes[]>('/api/models');
-      setModels(res);
+      setModels(res || []);
       setError('');
     } catch (err: any) {
       setError(err.message || 'Failed to load models');

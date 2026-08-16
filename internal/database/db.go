@@ -62,7 +62,7 @@ func (db *DB) ListPublicModels() ([]PublicModel, error) {
 	}
 	defer rows.Close()
 
-	var models []PublicModel
+	models := make([]PublicModel, 0)
 	for rows.Next() {
 		var m PublicModel
 		var desc sql.NullString
@@ -102,7 +102,7 @@ func (db *DB) ListProviders() ([]Provider, error) {
 	}
 	defer rows.Close()
 
-	var providers []Provider
+	providers := make([]Provider, 0)
 	for rows.Next() {
 		var p Provider
 		if err := rows.Scan(&p.ID, &p.Name, &p.Enabled, &p.CreatedAt); err != nil {
@@ -129,7 +129,7 @@ func (db *DB) ListProviderKeys(providerID string) ([]ProviderKey, error) {
 	}
 	defer rows.Close()
 
-	var keys []ProviderKey
+	keys := make([]ProviderKey, 0)
 	for rows.Next() {
 		var k ProviderKey
 		var safeErr, lastUsed sql.NullString
@@ -208,7 +208,7 @@ func (db *DB) ListBalanceAdjustments(providerKeyID string) ([]BalanceAdjustment,
 	}
 	defer rows.Close()
 
-	var adjustments []BalanceAdjustment
+	adjustments := make([]BalanceAdjustment, 0)
 	for rows.Next() {
 		var a BalanceAdjustment
 		if err := rows.Scan(&a.ID, &a.ProviderKeyID, &a.AmountMicroUSD, &a.Note, &a.CreatedAt); err != nil {
@@ -234,7 +234,7 @@ func (db *DB) GetKeyBalanceSummaries() ([]KeyBalanceSummary, error) {
 	}
 	defer rows.Close()
 
-	var summaries []KeyBalanceSummary
+	summaries := make([]KeyBalanceSummary, 0)
 	for rows.Next() {
 		var s KeyBalanceSummary
 		if err := rows.Scan(&s.ProviderKeyID, &s.ProviderID, &s.DisplayName, &s.KeyPrefix, &s.StartingBalanceMicroUSD, &s.Status, &s.AdjustmentsMicroUSD, &s.KnownSpendMicroUSD); err != nil {
@@ -261,7 +261,7 @@ func (db *DB) ListProviderModelMappings() ([]ProviderModelMapping, error) {
 	}
 	defer rows.Close()
 
-	var mappings []ProviderModelMapping
+	mappings := make([]ProviderModelMapping, 0)
 	for rows.Next() {
 		var m ProviderModelMapping
 		if err := rows.Scan(&m.ID, &m.ProviderID, &m.PublicModelID, &m.UpstreamModelID,
@@ -320,7 +320,7 @@ func (db *DB) GetRoutesForModel(publicModelID string) ([]RoutingEntry, error) {
 	}
 	defer rows.Close()
 
-	var entries []RoutingEntry
+	entries := make([]RoutingEntry, 0)
 	for rows.Next() {
 		var e RoutingEntry
 		if err := rows.Scan(&e.ID, &e.PublicModelID, &e.MappingID, &e.Priority, &e.ProviderID, &e.UpstreamModelID, &e.Enabled); err != nil {
@@ -393,7 +393,7 @@ func (db *DB) ListGatewayKeys() ([]GatewayKey, error) {
 	}
 	defer rows.Close()
 
-	var keys []GatewayKey
+	keys := make([]GatewayKey, 0)
 	for rows.Next() {
 		var k GatewayKey
 		var lastUsed, revoked sql.NullTime

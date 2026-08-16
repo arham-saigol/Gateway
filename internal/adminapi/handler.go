@@ -306,7 +306,7 @@ func (h *Handler) handleAnalytics(w http.ResponseWriter, r *http.Request) {
 		CostMicroUSD      int64  `json:"cost_micro_usd"`
 	}
 
-	var stats []dailyModelStat
+	stats := make([]dailyModelStat, 0)
 	for rows.Next() {
 		var s dailyModelStat
 		if err := rows.Scan(&s.DateUTC, &s.PublicModelID, &s.TotalRequests, &s.SuccessRequests, &s.FailedRequests,
@@ -346,11 +346,15 @@ func (h *Handler) handleListProviders(w http.ResponseWriter, r *http.Request) {
 		keysByProvider[k.ProviderID] = append(keysByProvider[k.ProviderID], k)
 	}
 
-	var result []providerWithKeys
+	result := make([]providerWithKeys, 0)
 	for _, p := range providersList {
+		kList := keysByProvider[p.ID]
+		if kList == nil {
+			kList = make([]database.ProviderKey, 0)
+		}
 		result = append(result, providerWithKeys{
 			Provider: p,
-			Keys:     keysByProvider[p.ID],
+			Keys:     kList,
 		})
 	}
 
@@ -470,7 +474,7 @@ func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
 		Mappings []database.ProviderModelMapping `json:"mappings"`
 	}
 
-	var result []modelWithRoutes
+	result := make([]modelWithRoutes, 0)
 	for _, m := range models {
 		routes, _ := h.db.GetRoutesForModel(m.ID)
 		var modelMappings []database.ProviderModelMapping
@@ -615,7 +619,7 @@ func (h *Handler) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var reqs []database.RequestRecord
+	reqs := make([]database.RequestRecord, 0)
 	for rows.Next() {
 		var req database.RequestRecord
 		if err := rows.Scan(&req.ID, &req.PublicModelID, &req.GatewayKeyID, &req.Status, &req.ErrorCategory, &req.Stream,
@@ -664,7 +668,7 @@ func (h *Handler) handleGetRequestDetail(w http.ResponseWriter, r *http.Request)
 	}
 	defer rows.Close()
 
-	var attempts []database.RequestAttemptRecord
+	attempts := make([]database.RequestAttemptRecord, 0)
 	for rows.Next() {
 		var att database.RequestAttemptRecord
 		if err := rows.Scan(&att.ID, &att.RequestID, &att.ProviderID, &att.ProviderKeyID, &att.MappingID, &att.Sequence,

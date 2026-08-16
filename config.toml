@@ -1,0 +1,24 @@
+[server]
+listen_addr = "127.0.0.1:8080"
+trusted_proxies = ["127.0.0.1"]
+
+[database]
+path = "gateway.db"
+busy_timeout_ms = 5000
+
+[security]
+master_key_path = "master.key"
+admin_session_expiry = "24h"
+cookie_secure = false
+
+[timeouts]
+first_response_timeout = "30s"
+stream_drain_timeout = "15s"
+
+[routing]
+max_retries_per_request = 3
+key_cooldown_duration = "30s"
+
+[retention]
+detailed_log_days = 30
+cleanup_interval = "1h"

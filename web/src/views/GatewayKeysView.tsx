@@ -20,7 +20,7 @@ export function GatewayKeysView() {
     try {
       setLoading(true);
       const res = await apiRequest<GatewayKey[]>('/api/gateway-keys');
-      setKeys(res);
+      setKeys(res || []);
       setError('');
     } catch (err: any) {
       setError(err.message || 'Failed to load gateway keys');
@@ -95,7 +95,7 @@ export function GatewayKeysView() {
               </tr>
             </thead>
             <tbody>
-              {keys.length === 0 ? (
+              {(!keys || keys.length === 0) ? (
                 <tr>
                   <td colSpan={6} style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)' }}>
                     {loading ? 'Loading gateway keys...' : 'No gateway keys issued yet. Click Create Gateway Key above.'}

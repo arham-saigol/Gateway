@@ -29,7 +29,7 @@ export function ProvidersView() {
     try {
       setLoading(true);
       const res = await apiRequest<Provider[]>('/api/providers');
-      setProviders(res);
+      setProviders(res || []);
       setError('');
     } catch (err: any) {
       setError(err.message || 'Failed to load providers');
