@@ -322,6 +322,9 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 			CreatedAt:         reqStartTime.UTC(),
 		})
 
+		_ = h.db.UpdateGatewayKeyLastUsed(gwKey.ID)
+		_ = h.db.UpdateProviderKeyLastUsed(target.ProviderKeyID)
+
 		chatResp.ID = gatewayRequestID
 		chatResp.Model = publicModel.ID
 		w.Header().Set("Content-Type", "application/json")
@@ -654,6 +657,11 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			FailoverCount:     attemptSeq - 1,
 			CreatedAt:         reqStartTime.UTC(),
 		})
+
+		if status == "success" {
+			_ = h.db.UpdateGatewayKeyLastUsed(gwKey.ID)
+			_ = h.db.UpdateProviderKeyLastUsed(target.ProviderKeyID)
+		}
 
 		return
 	}

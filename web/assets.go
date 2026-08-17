@@ -38,9 +38,18 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer indexFile.Close()
 
-	stat, _ := indexFile.Stat()
+	stat, err := indexFile.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	rs, ok := indexFile.(io.ReadSeeker)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile.(io.ReadSeeker))
+	http.ServeContent(w, r, "index.html", stat.ModTime(), rs)
 }
 
 func AssetHandler() http.Handler {

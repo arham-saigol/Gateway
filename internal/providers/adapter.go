@@ -214,7 +214,6 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
-				eventChan <- StreamEvent{Error: ctx.Err(), HTTPStatus: resp.StatusCode}
 				return
 			default:
 			}

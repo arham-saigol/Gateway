@@ -163,3 +163,62 @@ func TestClassifyError(t *testing.T) {
 		t.Errorf("expected 400 to be BadRequest (non-retryable), got %v", c)
 	}
 }
+
+func TestProviderAdapterStreamingChatCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		for i := 0; i < 100; i++ {
+			chunk := `{"id":"up-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"token"}}]}`
+			_, _ = w.Write([]byte("data: " + chunk + "\n\n"))
+			flusher.Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	adapter := providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", server.URL, "Bearer")
+
+	req := &providers.ChatRequest{
+		Model: "accounts/fireworks/models/deepseek-v4-flash",
+		Messages: []providers.ChatMessage{
+			{Role: "user", Content: "Hi"},
+		},
+		Stream: true,
+	}
+
+	events, err := adapter.StreamChat(ctx, "test-key-123", req.Model, req)
+	if err != nil {
+		t.Fatalf("unexpected stream start error: %v", err)
+	}
+
+	// Read one event and cancel context immediately
+	<-events
+	cancel()
+
+	// Ensure channel closes within a reasonable timeout rather than blocking indefinitely
+	done := make(chan struct{})
+	go func() {
+		for range events {
+			// Drain remaining buffered events if any
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Succeeded in exiting cleanly
+	case <-time.After(2 * time.Second):
+		t.Fatal("StreamChat goroutine leaked or hung on context cancellation")
+	}
+}
+

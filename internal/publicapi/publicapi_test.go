@@ -244,6 +244,16 @@ func TestChatCompletionsNonStreamingExecution(t *testing.T) {
 	if resp.Usage.PromptTokens != 20 || resp.Usage.CompletionTokens != 10 {
 		t.Errorf("unexpected usage: %+v", resp.Usage)
 	}
+
+	// Verify last_used_at was updated on gateway key and provider key
+	gwKeys, err := db.ListGatewayKeys()
+	if err != nil || len(gwKeys) == 0 || gwKeys[0].LastUsedAt == nil {
+		t.Errorf("expected gateway key last_used_at to be updated, got %+v", gwKeys)
+	}
+	pKeys, err := db.ListProviderKeys("fireworks")
+	if err != nil || len(pKeys) == 0 || pKeys[0].LastUsedAt == nil {
+		t.Errorf("expected provider key last_used_at to be updated, got %+v", pKeys)
+	}
 }
 
 func TestChatCompletionsStreamingExecution(t *testing.T) {
@@ -330,6 +340,16 @@ func TestChatCompletionsStreamingExecution(t *testing.T) {
 		if chunk["model"].(string) != "deepseek-v4-flash" {
 			t.Errorf("chunk leaked model ID: %v", chunk["model"])
 		}
+	}
+
+	// Verify last_used_at was updated on gateway key and provider key
+	gwKeys, err := db.ListGatewayKeys()
+	if err != nil || len(gwKeys) == 0 || gwKeys[0].LastUsedAt == nil {
+		t.Errorf("expected gateway key last_used_at to be updated for stream, got %+v", gwKeys)
+	}
+	pKeys, err := db.ListProviderKeys("fireworks")
+	if err != nil || len(pKeys) == 0 || pKeys[0].LastUsedAt == nil {
+		t.Errorf("expected provider key last_used_at to be updated for stream, got %+v", pKeys)
 	}
 }
 
