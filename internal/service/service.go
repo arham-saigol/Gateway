@@ -19,6 +19,27 @@ import (
 	"golang.org/x/term"
 )
 
+const SystemdUnitTemplate = `[Unit]
+Description=Arham Gateway OpenAI-Compatible Model Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=arham-gateway
+Group=arham-gateway
+ExecStart=%s
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+`
+
 const SystemdUnitContent = `[Unit]
 Description=Arham Gateway OpenAI-Compatible Model Gateway
 After=network.target
@@ -195,7 +216,18 @@ func RunSetup(configPath string) error {
 	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
 		unitPath := "/etc/systemd/system/gateway.service"
 		fmt.Printf("Installing systemd service unit to %s...\n", unitPath)
-		_ = os.WriteFile(unitPath, []byte(SystemdUnitContent), 0644)
+
+		execStart := "/usr/local/bin/gateway serve"
+		if configPath != "" {
+			if absPath, err := filepath.Abs(configPath); err == nil {
+				execStart = fmt.Sprintf("/usr/local/bin/gateway serve -config %s", absPath)
+			} else {
+				execStart = fmt.Sprintf("/usr/local/bin/gateway serve -config %s", configPath)
+			}
+		}
+
+		unitContent := fmt.Sprintf(SystemdUnitTemplate, execStart)
+		_ = os.WriteFile(unitPath, []byte(unitContent), 0644)
 		_ = exec.Command("systemctl", "daemon-reload").Run()
 		_ = exec.Command("systemctl", "enable", "gateway").Run()
 		fmt.Println("Systemd service 'gateway' installed and enabled.")

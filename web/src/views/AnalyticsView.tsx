@@ -27,7 +27,7 @@ export function AnalyticsView() {
   }
 
   const totalRequests = stats.reduce((acc, s) => acc + s.total_requests, 0);
-  const totalTokens = stats.reduce((acc, s) => acc + s.input_tokens + s.cached_input_tokens + s.output_tokens, 0);
+  const totalTokens = stats.reduce((acc, s) => acc + s.input_tokens + s.output_tokens, 0);
   const totalCost = stats.reduce((acc, s) => acc + s.cost_micro_usd, 0);
 
   return (
@@ -53,7 +53,7 @@ export function AnalyticsView() {
           <MetricCard
             label="Total Tokens Processed"
             value={totalTokens.toLocaleString()}
-            subtext="Input + Cached + Output"
+            subtext="Prompt + Output tokens"
           />
           <MetricCard
             label="Total Recorded Spend"

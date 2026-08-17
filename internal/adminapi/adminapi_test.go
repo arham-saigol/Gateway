@@ -254,3 +254,78 @@ func TestAdminLoginRateLimiting(t *testing.T) {
 	}
 }
 
+func TestAdminLoginTrustedProxySpoofing(t *testing.T) {
+	_, _, _, handler := setupAdminTestEnv(t)
+
+	badBody, _ := json.Marshal(map[string]string{"password": "WrongPassword"})
+
+	// Directly connecting untrusted IP trying to rotate spoofed headers
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(badBody))
+		req.RemoteAddr = "198.51.100.1:5555"
+		req.Header.Set("X-Forwarded-For", "10.0.0."+string(rune('1'+i)))
+		req.Header.Set("CF-Connecting-IP", "10.0.0."+string(rune('1'+i)))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("untrusted attempt %d: expected 401, got %d", i+1, rec.Code)
+		}
+	}
+
+	// 6th attempt from the same untrusted RemoteAddr should be rate-limited despite rotated headers
+	reqBlocked := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(badBody))
+	reqBlocked.RemoteAddr = "198.51.100.1:5555"
+	reqBlocked.Header.Set("X-Forwarded-For", "10.0.0.99")
+	recBlocked := httptest.NewRecorder()
+	handler.ServeHTTP(recBlocked, reqBlocked)
+	if recBlocked.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected spoofed header attack to be blocked with 429, got %d", recBlocked.Code)
+	}
+}
+
+func TestProviderKeyNotFoundAndValidation(t *testing.T) {
+	_, _, adminPass, handler := setupAdminTestEnv(t)
+	cookie, csrf := loginAdmin(t, handler, adminPass)
+
+	// 1. Create key for non-existent provider should return 400
+	badKeyBody, _ := json.Marshal(map[string]any{
+		"provider_id":  "nonexistent-provider",
+		"display_name": "Test Key",
+		"secret":       "secret-123",
+	})
+	reqBadProv := httptest.NewRequest(http.MethodPost, "/api/providers/keys", bytes.NewReader(badKeyBody))
+	reqBadProv.AddCookie(cookie)
+	reqBadProv.Header.Set("X-CSRF-Token", csrf)
+	recBadProv := httptest.NewRecorder()
+	handler.ServeHTTP(recBadProv, reqBadProv)
+	if recBadProv.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown provider, got %d: %s", recBadProv.Code, recBadProv.Body.String())
+	}
+
+	// 2. Update status of non-existent key should return 404
+	statusBody, _ := json.Marshal(map[string]string{"status": "disabled"})
+	reqStatus := httptest.NewRequest(http.MethodPost, "/api/providers/keys/pkey-unknown/status", bytes.NewReader(statusBody))
+	reqStatus.AddCookie(cookie)
+	reqStatus.Header.Set("X-CSRF-Token", csrf)
+	recStatus := httptest.NewRecorder()
+	handler.ServeHTTP(recStatus, reqStatus)
+	if recStatus.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown provider key status update, got %d: %s", recStatus.Code, recStatus.Body.String())
+	}
+
+	// 3. Add balance adjustment for non-existent key should return 404
+	adjBody, _ := json.Marshal(map[string]any{
+		"amount_micro_usd": 1000000,
+		"note":             "Credit top-up",
+	})
+	reqAdj := httptest.NewRequest(http.MethodPost, "/api/providers/keys/pkey-unknown/adjust", bytes.NewReader(adjBody))
+	reqAdj.AddCookie(cookie)
+	reqAdj.Header.Set("X-CSRF-Token", csrf)
+	recAdj := httptest.NewRecorder()
+	handler.ServeHTTP(recAdj, reqAdj)
+	if recAdj.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown provider key adjustment, got %d: %s", recAdj.Code, recAdj.Body.String())
+	}
+}
+
+

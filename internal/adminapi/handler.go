@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -125,21 +126,51 @@ func generateRandomID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-func getClientIP(r *http.Request) string {
-	if cf := r.Header.Get("CF-Connecting-IP"); cf != "" {
-		return strings.TrimSpace(cf)
+func isTrustedProxy(remoteIP string, trusted []string) bool {
+	if len(trusted) == 0 {
+		return false
 	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
-			return strings.TrimSpace(parts[0])
+	parsedRemote := net.ParseIP(remoteIP)
+	if parsedRemote == nil {
+		return false
+	}
+	for _, t := range trusted {
+		if t == remoteIP {
+			return true
+		}
+		if _, cidr, err := net.ParseCIDR(t); err == nil {
+			if cidr.Contains(parsedRemote) {
+				return true
+			}
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
+	return false
+}
+
+func (h *Handler) getClientIP(r *http.Request) string {
+	remoteHost, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remoteHost = r.RemoteAddr
 	}
-	return r.RemoteAddr
+
+	var trusted []string
+	if h.cfg != nil {
+		trusted = h.cfg.Server.TrustedProxies
+	}
+
+	if isTrustedProxy(remoteHost, trusted) {
+		if cf := r.Header.Get("CF-Connecting-IP"); cf != "" {
+			return strings.TrimSpace(cf)
+		}
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+				return strings.TrimSpace(parts[0])
+			}
+		}
+	}
+
+	return remoteHost
 }
 
 // ----------------- Auth Handlers -----------------
@@ -153,7 +184,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := getClientIP(r)
+	clientIP := h.getClientIP(r)
 	now := time.Now()
 
 	h.rateMu.Lock()
@@ -447,6 +478,15 @@ func (h *Handler) handleCreateProviderKey(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if _, err := h.db.GetProvider(body.ProviderID); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			http.Error(w, `{"error":"provider not found"}`, http.StatusBadRequest)
+			return
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
 	encSecret, err := crypto.Encrypt(h.masterKey, body.Secret)
 	if err != nil {
 		http.Error(w, `{"error":"encrypting provider secret"}`, http.StatusInternalServerError)
@@ -501,6 +541,10 @@ func (h *Handler) handleUpdateKeyStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := h.db.UpdateProviderKeyStatus(keyID, body.Status, nil); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			http.Error(w, `{"error":"provider key not found"}`, http.StatusNotFound)
+			return
+		}
 		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 		return
 	}
@@ -516,6 +560,15 @@ func (h *Handler) handleAddKeyAdjustment(w http.ResponseWriter, r *http.Request)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Note == "" {
 		http.Error(w, `{"error":"invalid adjustment payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	if _, err := h.db.GetProviderKey(keyID); err != nil {
+		if errors.Is(err, database.ErrNotFound) {
+			http.Error(w, `{"error":"provider key not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
 		return
 	}
 

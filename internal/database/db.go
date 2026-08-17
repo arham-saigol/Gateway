@@ -113,6 +113,18 @@ func (db *DB) ListProviders() ([]Provider, error) {
 	return providers, nil
 }
 
+func (db *DB) GetProvider(id string) (*Provider, error) {
+	row := db.conn.QueryRow("SELECT id, name, enabled, created_at FROM providers WHERE id = ?", id)
+	var p Provider
+	if err := row.Scan(&p.ID, &p.Name, &p.Enabled, &p.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
 func (db *DB) ListProviderKeys(providerID string) ([]ProviderKey, error) {
 	var query string
 	var args []any
@@ -149,12 +161,11 @@ func (db *DB) ListProviderKeys(providerID string) ([]ProviderKey, error) {
 }
 
 func (db *DB) GetProviderKey(id string) (*ProviderKey, error) {
+	row := db.conn.QueryRow("SELECT id, provider_id, encrypted_secret, display_name, key_prefix, starting_balance_micro_usd, status, safe_last_error, last_used_at, created_at, updated_at FROM provider_keys WHERE id = ?", id)
 	var k ProviderKey
 	var safeErr sql.NullString
 	var lastUsedTime sql.NullTime
-	err := db.conn.QueryRow("SELECT id, provider_id, encrypted_secret, display_name, key_prefix, starting_balance_micro_usd, status, safe_last_error, last_used_at, created_at, updated_at FROM provider_keys WHERE id = ?", id).
-		Scan(&k.ID, &k.ProviderID, &k.EncryptedSecret, &k.DisplayName, &k.KeyPrefix, &k.StartingBalanceMicroUSD, &k.Status, &safeErr, &lastUsedTime, &k.CreatedAt, &k.UpdatedAt)
-	if err != nil {
+	if err := row.Scan(&k.ID, &k.ProviderID, &k.EncryptedSecret, &k.DisplayName, &k.KeyPrefix, &k.StartingBalanceMicroUSD, &k.Status, &safeErr, &lastUsedTime, &k.CreatedAt, &k.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -178,12 +189,22 @@ func (db *DB) CreateProviderKey(k ProviderKey) error {
 }
 
 func (db *DB) UpdateProviderKeyStatus(id, status string, safeLastError *string) error {
-	_, err := db.conn.Exec(`
+	res, err := db.conn.Exec(`
 		UPDATE provider_keys
 		SET status = ?, safe_last_error = ?, updated_at = ?
 		WHERE id = ?
 	`, status, safeLastError, time.Now().UTC(), id)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (db *DB) UpdateProviderKeyLastUsed(id string) error {
