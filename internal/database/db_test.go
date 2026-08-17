@@ -205,3 +205,147 @@ func TestProviderKeyAndBalanceLedger(t *testing.T) {
 		t.Fatalf("spend/remaining balance changed after log pruning! Expected 9500000, got %d", summariesAfterPrune[0].EstimatedRemainingMicroUSD)
 	}
 }
+
+func TestRollupSequenceRetryTotalRequests(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "gateway.db")
+
+	db, err := database.Open(dbPath, 5000)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+	_ = db.Migrate()
+	_ = db.SeedDefaults()
+
+	now := time.Now().UTC()
+	keyID := "key-fw-retry-test"
+	err = db.CreateProviderKey(database.ProviderKey{
+		ID:                      keyID,
+		ProviderID:              "fireworks",
+		EncryptedSecret:         "enc-secret-xyz",
+		DisplayName:             "Fireworks Retry Test",
+		KeyPrefix:               "fw_retry...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create provider key: %v", err)
+	}
+
+	_ = db.CreateGatewayKey(database.GatewayKey{
+		ID:        "gw-key-1",
+		KeyHash:   "test-hash-retry",
+		KeyPrefix: "arham_test...",
+		Name:      "test-client",
+		Status:    "active",
+		CreatedAt: now,
+	})
+
+	reqID := "req-retry-1"
+	gwKeyID := "gw-key-1"
+	errCat := "transient"
+	http500 := 500
+	http200 := 200
+
+	// Attempt 1: Failed
+	err = db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
+		ID:                 "att-1",
+		RequestID:          reqID,
+		ProviderID:         "fireworks",
+		ProviderKeyID:      keyID,
+		MappingID:          "map-fw-flash",
+		Sequence:           1,
+		Status:             "error",
+		HTTPStatus:         &http500,
+		ErrorCategory:      &errCat,
+		DurationMs:         100,
+		InputRateSnapshot:  140000,
+		CachedRateSnapshot: 14000,
+		OutputRateSnapshot: 280000,
+		UsageConfidence:    "unavailable",
+		CreatedAt:          now,
+	}, database.RequestRecord{
+		ID:              reqID,
+		PublicModelID:   "deepseek-v4-flash",
+		GatewayKeyID:    &gwKeyID,
+		Status:          "error",
+		ErrorCategory:   &errCat,
+		Stream:          false,
+		TotalDurationMs: 100,
+		UsageConfidence: "unavailable",
+		RetryCount:      0,
+		FailoverCount:   0,
+		CreatedAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("failed to record attempt 1: %v", err)
+	}
+
+	// Attempt 2: Succeeded (same key retry)
+	inTokens := int64(100)
+	outTokens := int64(50)
+	costMicro := int64(28000)
+	err = db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
+		ID:                 "att-2",
+		RequestID:          reqID,
+		ProviderID:         "fireworks",
+		ProviderKeyID:      keyID,
+		MappingID:          "map-fw-flash",
+		Sequence:           2,
+		Status:             "success",
+		HTTPStatus:         &http200,
+		DurationMs:         150,
+		InputTokens:        &inTokens,
+		OutputTokens:       &outTokens,
+		InputRateSnapshot:  140000,
+		CachedRateSnapshot: 14000,
+		OutputRateSnapshot: 280000,
+		TotalCostMicroUSD:  &costMicro,
+		UsageConfidence:    "provider_reported",
+		CreatedAt:          now,
+	}, database.RequestRecord{
+		ID:                reqID,
+		PublicModelID:     "deepseek-v4-flash",
+		GatewayKeyID:      &gwKeyID,
+		Status:            "success",
+		Stream:            false,
+		TotalDurationMs:   250,
+		InputTokens:       &inTokens,
+		OutputTokens:      &outTokens,
+		TotalCostMicroUSD: &costMicro,
+		UsageConfidence:   "provider_reported",
+		RetryCount:        1,
+		FailoverCount:     0,
+		CreatedAt:         now,
+	})
+	if err != nil {
+		t.Fatalf("failed to record attempt 2: %v", err)
+	}
+
+	dateUTC := now.Format("2006-01-02")
+	var totalReqs, successReqs, failReqs, retries int
+	err = db.Conn().QueryRow(`
+		SELECT total_requests, successful_requests, failed_requests, retries
+		FROM usage_rollups_daily
+		WHERE date_utc = ? AND provider_key_id = ?
+	`, dateUTC, keyID).Scan(&totalReqs, &successReqs, &failReqs, &retries)
+	if err != nil {
+		t.Fatalf("failed to query daily rollup: %v", err)
+	}
+
+	if totalReqs != 1 {
+		t.Errorf("expected total_requests = 1, got %d", totalReqs)
+	}
+	if successReqs != 1 {
+		t.Errorf("expected successful_requests = 1, got %d", successReqs)
+	}
+	if failReqs != 1 {
+		t.Errorf("expected failed_requests = 1, got %d", failReqs)
+	}
+	if retries != 1 {
+		t.Errorf("expected retries = 1, got %d", retries)
+	}
+}

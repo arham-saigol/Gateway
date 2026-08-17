@@ -445,3 +445,176 @@ func TestStreamingErrorDoesNotEmitDone(t *testing.T) {
 		t.Errorf("expected stream with upstream error NOT to emit [DONE], got: %s", out)
 	}
 }
+
+func TestStreamingFailoverOnInitialStreamError(t *testing.T) {
+	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
+
+	// Provider 1 (fireworks) returns HTTP 500 error on stream initiation
+	mockFw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"fireworks internal error"}`))
+	}))
+	defer mockFw.Close()
+
+	// Provider 2 (siliconflow) returns valid stream
+	mockSf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"id\":\"sf-chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Failover succeeded\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer mockSf.Close()
+
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockFw.URL, "Bearer"))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("siliconflow", "SiliconFlow", mockSf.URL, "Bearer"))
+
+	// Create fireworks key (pri 1) and siliconflow key (pri 2)
+	encFw, _ := crypto.Encrypt(masterKey, "mock-fw-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-fw-fail",
+		ProviderID:              "fireworks",
+		EncryptedSecret:         encFw,
+		DisplayName:             "Fireworks Failing",
+		KeyPrefix:               "fw_fail...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	encSf, _ := crypto.Encrypt(masterKey, "mock-sf-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-sf-ok",
+		ProviderID:              "siliconflow",
+		EncryptedSecret:         encSf,
+		DisplayName:             "SiliconFlow Working",
+		KeyPrefix:               "sf_ok...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Hi"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body)))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on failover, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	bodyStr := rec.Body.String()
+	if !strings.Contains(bodyStr, "Failover succeeded") {
+		t.Errorf("expected stream to contain content from provider 2, got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "data: [DONE]") {
+		t.Errorf("expected stream to contain [DONE], got: %s", bodyStr)
+	}
+}
+
+func TestFirstResponseTimeoutEnforced(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "gateway.db")
+
+	db, err := database.Open(dbPath, 5000)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+	_ = db.Migrate()
+	_ = db.SeedDefaults()
+
+	masterKey, _ := crypto.GenerateRandomBytes(32)
+	rawKey, prefix, hash, _ := auth.GenerateGatewayKey("test-client")
+	_ = db.CreateGatewayKey(database.GatewayKey{
+		ID:        "gw-key-timeout",
+		KeyHash:   hash,
+		KeyPrefix: prefix,
+		Name:      "test-client",
+		Status:    "active",
+		CreatedAt: time.Now().UTC(),
+	})
+
+	// Configure a tight 100ms first response timeout
+	cfg := config.DefaultConfig()
+	cfg.Timeouts.FirstResponseTimeout = config.Duration(100 * time.Millisecond)
+
+	// Provider 1 hangs for 500ms (exceeding 100ms timeout)
+	mockHanging := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{}})
+	}))
+	defer mockHanging.Close()
+
+	// Provider 2 responds immediately
+	mockFast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "up-fast-id",
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   "accounts/siliconflow/models/deepseek-v4-flash",
+			"choices": []map[string]any{
+				{
+					"index":         0,
+					"message":       map[string]any{"role": "assistant", "content": "Fast provider response"},
+					"finish_reason": "stop",
+				},
+			},
+		})
+	}))
+	defer mockFast.Close()
+
+	router := routing.NewRouter(db, masterKey, &cfg)
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockHanging.URL, "Bearer"))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("siliconflow", "SiliconFlow", mockFast.URL, "Bearer"))
+
+	encFw, _ := crypto.Encrypt(masterKey, "mock-fw-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-fw-hang",
+		ProviderID:              "fireworks",
+		EncryptedSecret:         encFw,
+		DisplayName:             "Fireworks Hanging",
+		KeyPrefix:               "fw_hang...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	encSf, _ := crypto.Encrypt(masterKey, "mock-sf-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-sf-fast",
+		ProviderID:              "siliconflow",
+		EncryptedSecret:         encSf,
+		DisplayName:             "SiliconFlow Fast",
+		KeyPrefix:               "sf_fast...",
+		StartingBalanceMicroUSD: 6000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	handler := publicapi.NewHandler(db, router, &cfg)
+
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Timeout test"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body)))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after failover from hanging provider, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if !strings.Contains(rec.Body.String(), "Fast provider response") {
+		t.Errorf("expected response from fast provider, got: %s", rec.Body.String())
+	}
+}
+

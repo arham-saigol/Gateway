@@ -41,12 +41,28 @@ func (a *GenericOpenAIAdapter) Name() string {
 	return a.name
 }
 
+type HTTPStatusError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("upstream stream error (status %d): %s", e.StatusCode, e.Message)
+}
+
 func (a *GenericOpenAIAdapter) ClassifyError(statusCode int, err error) ErrorClassification {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return ErrorClassificationTimeout
 	}
 	if errors.Is(err, context.Canceled) {
 		return ErrorClassificationNone
+	}
+
+	if statusCode == 0 && err != nil {
+		var httpErr *HTTPStatusError
+		if errors.As(err, &httpErr) {
+			statusCode = httpErr.StatusCode
+		}
 	}
 
 	switch statusCode {
@@ -64,6 +80,9 @@ func (a *GenericOpenAIAdapter) ClassifyError(statusCode int, err error) ErrorCla
 		}
 		if statusCode >= 400 && statusCode < 500 {
 			return ErrorClassificationBadRequest
+		}
+		if statusCode == 0 && err != nil {
+			return ErrorClassificationTransient
 		}
 		return ErrorClassificationNone
 	}
@@ -174,7 +193,10 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		return nil, fmt.Errorf("upstream stream error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Message:    string(respBody),
+		}
 	}
 
 	eventChan := make(chan StreamEvent, 64)

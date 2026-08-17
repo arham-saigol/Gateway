@@ -244,7 +244,7 @@ export function GatewayKeysView() {
               />
             </div>
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              Keys are generated with cryptographically secure random bytes and hashed with argon2id for fast, secure lookup.
+              Keys are generated with cryptographically secure random bytes and hashed with SHA-256 for fast, secure lookup.
             </p>
           </form>
         )}

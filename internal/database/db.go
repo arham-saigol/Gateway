@@ -483,6 +483,11 @@ func (db *DB) FinalizeAttemptAndRollup(att RequestAttemptRecord, req RequestReco
 		return "none"
 	}())
 
+	isInitial := 0
+	if att.Sequence <= 1 {
+		isInitial = 1
+	}
+
 	isSuccess := 0
 	isFail := 0
 	if att.Status == "success" {
@@ -521,9 +526,9 @@ func (db *DB) FinalizeAttemptAndRollup(att RequestAttemptRecord, req RequestReco
 			total_requests, successful_requests, failed_requests, retries, failovers,
 			input_tokens, cached_input_tokens, output_tokens, known_cost_micro_usd, unknown_cost_attempts,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			total_requests = total_requests + 1,
+			total_requests = total_requests + excluded.total_requests,
 			successful_requests = successful_requests + excluded.successful_requests,
 			failed_requests = failed_requests + excluded.failed_requests,
 			retries = retries + excluded.retries,
@@ -534,7 +539,7 @@ func (db *DB) FinalizeAttemptAndRollup(att RequestAttemptRecord, req RequestReco
 			unknown_cost_attempts = unknown_cost_attempts + excluded.unknown_cost_attempts,
 			updated_at = excluded.updated_at
 	`, rollupID, dateUTC, att.ProviderKeyID, att.MappingID, req.PublicModelID, req.GatewayKeyID,
-		isSuccess, isFail, retries,
+		isInitial, isSuccess, isFail, retries,
 		inTokens, cachedTokens, outTokens, costMicro, unknownCost, now)
 	if err != nil {
 		return fmt.Errorf("upserting daily rollup: %w", err)

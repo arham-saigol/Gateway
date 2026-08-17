@@ -1,6 +1,7 @@
 package publicapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -47,22 +48,42 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (h *Handler) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.Conn().Ping(); err != nil {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "database unavailable"})
+		_, _ = w.Write([]byte("database unavailable"))
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+	_, _ = w.Write([]byte("ready"))
+}
+
+type openAIErrorResponse struct {
+	Error openAIErrorDetail `json:"error"`
+}
+
+type openAIErrorDetail struct {
+	Message string  `json:"message"`
+	Type    string  `json:"type"`
+	Param   *string `json:"param"`
+	Code    *string `json:"code"`
+}
+
+func writeOpenAIError(w http.ResponseWriter, statusCode int, message, errType string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(openAIErrorResponse{
+		Error: openAIErrorDetail{
+			Message: message,
+			Type:    errType,
+			Param:   nil,
+			Code:    nil,
+		},
+	})
 }
 
 func (h *Handler) authenticateGatewayKey(r *http.Request) (*database.GatewayKey, error) {
@@ -72,49 +93,30 @@ func (h *Handler) authenticateGatewayKey(r *http.Request) (*database.GatewayKey,
 	}
 
 	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-		return nil, errors.New("invalid Authorization format, expected Bearer <token>")
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		return nil, errors.New("invalid Authorization header format")
 	}
 
 	rawKey := strings.TrimSpace(parts[1])
-	if rawKey == "" {
-		return nil, errors.New("empty bearer token")
-	}
-
 	keyHash := auth.HashGatewayKey(rawKey)
-	gwKey, err := h.db.GetGatewayKeyByHash(keyHash)
+
+	key, err := h.db.GetGatewayKeyByHash(keyHash)
 	if err != nil {
-		if errors.Is(err, database.ErrNotFound) {
-			return nil, errors.New("invalid or revoked API key")
-		}
 		return nil, err
 	}
 
-	if gwKey.Status != "active" {
-		return nil, errors.New("API key is inactive or revoked")
+	if key.Status != "active" {
+		return nil, errors.New("gateway key is inactive")
 	}
 
-	_ = h.db.UpdateGatewayKeyLastUsed(gwKey.ID)
-	return gwKey, nil
+	return key, nil
 }
 
-func writeOpenAIError(w http.ResponseWriter, statusCode int, message, errType string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"message": message,
-			"type":    errType,
-			"param":   nil,
-			"code":    nil,
-		},
-	})
-}
-
-func generateID(prefix string) string {
-	b := make([]byte, 12)
-	_, _ = io.ReadFull(rand.Reader, b)
-	return prefix + hex.EncodeToString(b)
+type modelEntry struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
 }
 
 func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
@@ -129,13 +131,6 @@ func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type modelEntry struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
-	}
-
 	var data []modelEntry
 	for _, m := range models {
 		data = append(data, modelEntry{
@@ -147,6 +142,7 @@ func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"object": "list",
 		"data":   data,
@@ -177,14 +173,12 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Validate public model alias
 	publicModel, err := h.db.GetPublicModel(reqBody.Model)
 	if err != nil || !publicModel.Enabled {
 		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("The model '%s' does not exist or is not enabled.", reqBody.Model), "invalid_request_error")
 		return
 	}
 
-	// Reject if both max_tokens and max_completion_tokens are provided
 	if reqBody.MaxTokens != nil && reqBody.MaxCompletionTokens != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "Cannot specify both max_tokens and max_completion_tokens.", "invalid_request_error")
 		return
@@ -222,7 +216,16 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 		attemptID := generateID("att-")
 		attemptStart := time.Now()
 
-		chatResp, stats, err := adapter.ExecuteChat(r.Context(), target.DecryptedSecret, target.UpstreamModelID, req)
+		attemptCtx := r.Context()
+		var cancel context.CancelFunc
+		if timeout := h.cfg.Timeouts.FirstResponseTimeout.Duration(); timeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(r.Context(), timeout)
+		} else {
+			attemptCtx, cancel = context.WithCancel(r.Context())
+		}
+
+		chatResp, stats, err := adapter.ExecuteChat(attemptCtx, target.DecryptedSecret, target.UpstreamModelID, req)
+		cancel()
 		attemptDuration := time.Since(attemptStart)
 
 		if err != nil {
@@ -235,7 +238,6 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 				errCat = &cStr
 			}
 
-			// Record failed attempt
 			_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
 				ID:                 attemptID,
 				RequestID:          gatewayRequestID,
@@ -273,22 +275,17 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 			}
 
 			if !classification.IsRetryable() {
-				// Non-retryable error: fail immediately
 				writeOpenAIError(w, http.StatusBadRequest, "Invalid request parameters for upstream model.", "invalid_request_error")
 				return
 			}
-
-			// Retry with next key/provider
 			continue
 		}
 
-		// Success! Calculate exact integer cost
 		var costMicro *int64
 		if c, ok := accounting.CalculateAttemptCost(stats.InputTokens, stats.CachedInputTokens, stats.OutputTokens, target.InputRateSnapshot, target.CachedRateSnapshot, target.OutputRateSnapshot); ok {
 			costMicro = &c
 		}
 
-		// Record successful attempt and request
 		_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
 			ID:                 attemptID,
 			RequestID:          gatewayRequestID,
@@ -325,16 +322,13 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 			CreatedAt:         reqStartTime.UTC(),
 		})
 
-		// Normalize response: replace upstream ID with gateway ID and model with public alias
 		chatResp.ID = gatewayRequestID
 		chatResp.Model = publicModel.ID
-
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(chatResp)
 		return
 	}
 
-	// All attempts failed
 	writeOpenAIError(w, http.StatusBadGateway, fmt.Sprintf("All upstream provider attempts failed: %v", lastErr), "api_error")
 }
 
@@ -366,10 +360,72 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 		attemptID := generateID("att-")
 		attemptStart := time.Now()
 
-		eventChan, err := adapter.StreamChat(r.Context(), target.DecryptedSecret, target.UpstreamModelID, req)
+		streamCtx, cancelStream := context.WithCancel(r.Context())
+		var firstRespTimer *time.Timer
+		if timeout := h.cfg.Timeouts.FirstResponseTimeout.Duration(); timeout > 0 {
+			firstRespTimer = time.AfterFunc(timeout, func() {
+				cancelStream()
+			})
+		}
+
+		eventChan, err := adapter.StreamChat(streamCtx, target.DecryptedSecret, target.UpstreamModelID, req)
+		if firstRespTimer != nil {
+			firstRespTimer.Stop()
+		}
+
 		if err != nil {
-			classification := adapter.ClassifyError(0, err)
+			cancelStream()
+			httpStatus := 0
+			var httpErr *providers.HTTPStatusError
+			if errors.As(err, &httpErr) {
+				httpStatus = httpErr.StatusCode
+			}
+			classification := adapter.ClassifyError(httpStatus, err)
+			if errors.Is(err, context.Canceled) && r.Context().Err() == nil {
+				classification = providers.ErrorClassificationTimeout
+			}
 			lastErr = err
+
+			var errCat *string
+			if classification != providers.ErrorClassificationNone {
+				cStr := string(classification)
+				errCat = &cStr
+			}
+
+			attemptDuration := time.Since(attemptStart)
+			var httpStatusPtr *int
+			if httpStatus > 0 {
+				httpStatusPtr = &httpStatus
+			}
+			_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
+				ID:                 attemptID,
+				RequestID:          gatewayRequestID,
+				ProviderID:         target.ProviderID,
+				ProviderKeyID:      target.ProviderKeyID,
+				MappingID:          target.MappingID,
+				Sequence:           attemptSeq,
+				Status:             "error",
+				HTTPStatus:         httpStatusPtr,
+				ErrorCategory:      errCat,
+				DurationMs:         attemptDuration.Milliseconds(),
+				InputRateSnapshot:  target.InputRateSnapshot,
+				CachedRateSnapshot: target.CachedRateSnapshot,
+				OutputRateSnapshot: target.OutputRateSnapshot,
+				UsageConfidence:    "unavailable",
+				CreatedAt:          attemptStart.UTC(),
+			}, database.RequestRecord{
+				ID:              gatewayRequestID,
+				PublicModelID:   publicModel.ID,
+				GatewayKeyID:    &gwKey.ID,
+				Status:          "error",
+				ErrorCategory:   errCat,
+				Stream:          true,
+				TotalDurationMs: time.Since(reqStartTime).Milliseconds(),
+				UsageConfidence: "unavailable",
+				RetryCount:      attemptSeq - 1,
+				FailoverCount:   attemptSeq - 1,
+				CreatedAt:       reqStartTime.UTC(),
+			})
 
 			if classification == providers.ErrorClassificationAuthInvalid {
 				_ = h.router.MarkKeyAuthInvalid(target.ProviderKeyID, "Authentication failure with upstream provider")
@@ -384,7 +440,89 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			continue
 		}
 
-		// Stream established
+		if timeout := h.cfg.Timeouts.FirstResponseTimeout.Duration(); timeout > 0 {
+			firstRespTimer = time.AfterFunc(timeout, func() {
+				cancelStream()
+			})
+		}
+		firstEv, ok := <-eventChan
+		if firstRespTimer != nil {
+			firstRespTimer.Stop()
+		}
+
+		if !ok || firstEv.Error != nil {
+			cancelStream()
+			var attemptErr error
+			var httpStatus int
+			if !ok {
+				attemptErr = errors.New("upstream stream closed before emitting events")
+				httpStatus = 0
+			} else {
+				attemptErr = firstEv.Error
+				httpStatus = firstEv.HTTPStatus
+			}
+
+			classification := adapter.ClassifyError(httpStatus, attemptErr)
+			if errors.Is(attemptErr, context.Canceled) && r.Context().Err() == nil {
+				classification = providers.ErrorClassificationTimeout
+			}
+			lastErr = attemptErr
+
+			var errCat *string
+			if classification != providers.ErrorClassificationNone {
+				cStr := string(classification)
+				errCat = &cStr
+			}
+
+			attemptDuration := time.Since(attemptStart)
+			var httpStatusPtr *int
+			if httpStatus > 0 {
+				httpStatusPtr = &httpStatus
+			}
+			_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
+				ID:                 attemptID,
+				RequestID:          gatewayRequestID,
+				ProviderID:         target.ProviderID,
+				ProviderKeyID:      target.ProviderKeyID,
+				MappingID:          target.MappingID,
+				Sequence:           attemptSeq,
+				Status:             "error",
+				HTTPStatus:         httpStatusPtr,
+				ErrorCategory:      errCat,
+				DurationMs:         attemptDuration.Milliseconds(),
+				InputRateSnapshot:  target.InputRateSnapshot,
+				CachedRateSnapshot: target.CachedRateSnapshot,
+				OutputRateSnapshot: target.OutputRateSnapshot,
+				UsageConfidence:    "unavailable",
+				CreatedAt:          attemptStart.UTC(),
+			}, database.RequestRecord{
+				ID:              gatewayRequestID,
+				PublicModelID:   publicModel.ID,
+				GatewayKeyID:    &gwKey.ID,
+				Status:          "error",
+				ErrorCategory:   errCat,
+				Stream:          true,
+				TotalDurationMs: time.Since(reqStartTime).Milliseconds(),
+				UsageConfidence: "unavailable",
+				RetryCount:      attemptSeq - 1,
+				FailoverCount:   attemptSeq - 1,
+				CreatedAt:       reqStartTime.UTC(),
+			})
+
+			if classification == providers.ErrorClassificationAuthInvalid {
+				_ = h.router.MarkKeyAuthInvalid(target.ProviderKeyID, "Authentication failure with upstream provider")
+			} else if classification.IsRetryable() {
+				h.router.MarkKeyCooldown(target.ProviderKeyID, h.cfg.Routing.KeyCooldownDuration.Duration())
+			}
+
+			if !classification.IsRetryable() {
+				writeOpenAIError(w, http.StatusBadRequest, "Invalid request parameters for upstream model.", "invalid_request_error")
+				return
+			}
+			continue
+		}
+
+		defer cancelStream()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -395,19 +533,37 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 		var finalUsage *providers.Usage
 		var streamErr error
 
+		if firstEv.IsFirst && firstEv.TTFT > 0 {
+			ttft := firstEv.TTFT.Milliseconds()
+			ttftMs = &ttft
+		}
+		if firstEv.Chunk != nil {
+			firstEv.Chunk.ID = gatewayRequestID
+			firstEv.Chunk.Model = publicModel.ID
+
+			if firstEv.Chunk.Usage != nil {
+				finalUsage = firstEv.Chunk.Usage
+			}
+
+			chunkBytes, err := json.Marshal(firstEv.Chunk)
+			if err == nil {
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
+				flusher.Flush()
+			}
+		}
+
 		for ev := range eventChan {
 			if ev.Error != nil {
 				streamErr = ev.Error
 				break
 			}
 
-			if ev.IsFirst && ev.TTFT > 0 {
+			if ev.IsFirst && ev.TTFT > 0 && ttftMs == nil {
 				ttft := ev.TTFT.Milliseconds()
 				ttftMs = &ttft
 			}
 
 			if ev.Chunk != nil {
-				// Normalize chunk
 				ev.Chunk.ID = gatewayRequestID
 				ev.Chunk.Model = publicModel.ID
 
@@ -423,15 +579,12 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			}
 		}
 
-		// Send [DONE] only if stream completed without error
 		if streamErr == nil {
 			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 			flusher.Flush()
 		}
 
 		attemptDuration := time.Since(attemptStart)
-
-		// Finalize accounting
 		var inTokens, cachedTokens, outTokens int64
 		usageConf := "unavailable"
 		var costMicro *int64
@@ -506,4 +659,10 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 	}
 
 	writeOpenAIError(w, http.StatusBadGateway, fmt.Sprintf("All upstream streaming attempts failed: %v", lastErr), "api_error")
+}
+
+func generateID(prefix string) string {
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	return prefix + hex.EncodeToString(b)
 }
