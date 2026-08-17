@@ -3,7 +3,9 @@ package publicapi_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -635,6 +637,120 @@ func TestFirstResponseTimeoutEnforced(t *testing.T) {
 
 	if !strings.Contains(rec.Body.String(), "Fast provider response") {
 		t.Errorf("expected response from fast provider, got: %s", rec.Body.String())
+	}
+}
+
+func TestChatCompletionClientCancellation(t *testing.T) {
+	db, masterKey, rawKey, _, _ := setupTestEnvironment(t)
+	cfg := config.DefaultConfig()
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":123,"model":"qwen-2.5-72b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"Response"}}]}`))
+	}))
+	defer mockServer.Close()
+
+	router := routing.NewRouter(db, masterKey, &cfg)
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockServer.URL, "Bearer"))
+
+	encSecret, _ := crypto.Encrypt(masterKey, "mock-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-cancel-test",
+		ProviderID:              "fireworks",
+		EncryptedSecret:         encSecret,
+		DisplayName:             "Test Key",
+		KeyPrefix:               "fw_test...",
+		StartingBalanceMicroUSD: 5000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	handler := publicapi.NewHandler(db, router, &cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Cancel test"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body))).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+
+	// Cancel context quickly while request is processing
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	handler.ServeHTTP(rec, req)
+
+	// Verify request was recorded as canceled
+	var recordedStatus string
+	err := db.Conn().QueryRow("SELECT status FROM requests WHERE public_model_id = 'deepseek-v4-flash' ORDER BY created_at DESC LIMIT 1").Scan(&recordedStatus)
+	if err != nil {
+		t.Fatalf("failed to query request record: %v", err)
+	}
+	if recordedStatus != "canceled" {
+		t.Errorf("expected request status 'canceled', got %s", recordedStatus)
+	}
+}
+
+func TestStreamingChatCompletionClientCancellation(t *testing.T) {
+	db, masterKey, rawKey, _, _ := setupTestEnvironment(t)
+	cfg := config.DefaultConfig()
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < 5; i++ {
+			_, _ = fmt.Fprintf(w, "data: {\"id\":\"chunk-%d\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"chunk \"}}]}\n\n", i)
+			flusher.Flush()
+			time.Sleep(50 * time.Millisecond)
+		}
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer mockServer.Close()
+
+	router := routing.NewRouter(db, masterKey, &cfg)
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockServer.URL, "Bearer"))
+
+	encSecret, _ := crypto.Encrypt(masterKey, "mock-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID:                      "key-stream-cancel",
+		ProviderID:              "fireworks",
+		EncryptedSecret:         encSecret,
+		DisplayName:             "Test Key",
+		KeyPrefix:               "fw_stream...",
+		StartingBalanceMicroUSD: 5000000,
+		Status:                  "active",
+		CreatedAt:               time.Now().UTC(),
+		UpdatedAt:               time.Now().UTC(),
+	})
+
+	handler := publicapi.NewHandler(db, router, &cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Stream cancel test"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body))).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+
+	// Cancel stream after receiving first chunk
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+
+	handler.ServeHTTP(rec, req)
+
+	var recordedStatus string
+	err := db.Conn().QueryRow("SELECT status FROM requests WHERE public_model_id = 'deepseek-v4-flash' ORDER BY created_at DESC LIMIT 1").Scan(&recordedStatus)
+	if err != nil {
+		t.Fatalf("failed to query streaming request record: %v", err)
+	}
+	if recordedStatus != "canceled" {
+		t.Errorf("expected streaming request status 'canceled', got %s", recordedStatus)
 	}
 }
 

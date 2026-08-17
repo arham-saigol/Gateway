@@ -1,9 +1,10 @@
 package database
 
 import (
+	"cmp"
 	"embed"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -51,8 +52,8 @@ func (db *DB) Migrate() error {
 		files = append(files, migrationFile{version: version, fileName: entry.Name()})
 	}
 
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].version < files[j].version
+	slices.SortFunc(files, func(a, b migrationFile) int {
+		return cmp.Compare(a.version, b.version)
 	})
 
 	for _, file := range files {

@@ -13,10 +13,8 @@ import (
 )
 
 var (
-	ErrNoRoutesAvailable    = errors.New("no enabled routes configured for model")
-	ErrNoHealthyKeysFound   = errors.New("no healthy provider keys available for model")
-	ErrModelNotFound        = errors.New("public model not found or disabled")
-	ErrAdapterNotFound      = errors.New("provider adapter not found")
+	ErrNoRoutesAvailable  = errors.New("no enabled routes configured for model")
+	ErrNoHealthyKeysFound = errors.New("no healthy provider keys available for model")
 )
 
 type Target struct {

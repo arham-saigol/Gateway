@@ -110,8 +110,7 @@ func GenerateSessionToken() (rawToken, hashedToken string, err error) {
 }
 
 func HashSessionToken(rawToken string) string {
-	h := sha256.Sum256([]byte(rawToken))
-	return hex.EncodeToString(h[:])
+	return HashGatewayKey(rawToken)
 }
 
 func GenerateCSRFToken() (string, error) {

@@ -44,3 +44,27 @@ func TestSanitizeErrorMessage(t *testing.T) {
 		t.Errorf("sanitized error leaked upstream URL: %s", sanitized)
 	}
 }
+
+func TestRedactedLoggerPreservesMetricsAndIdentifiers(t *testing.T) {
+	var buf bytes.Buffer
+	l := logger.New(&buf, logger.LevelInfo)
+
+	l.Info("request completed",
+		"input_tokens", 150,
+		"output_tokens", 45,
+		"cached_input_tokens", 10,
+		"gateway_key_id", "gw-key-123",
+		"model", "gpt-4o",
+	)
+
+	out := buf.String()
+	if !strings.Contains(out, `"input_tokens":150`) {
+		t.Errorf("expected input_tokens:150 in log, got: %s", out)
+	}
+	if !strings.Contains(out, `"output_tokens":45`) {
+		t.Errorf("expected output_tokens:45 in log, got: %s", out)
+	}
+	if !strings.Contains(out, `"gateway_key_id":"gw-key-123"`) {
+		t.Errorf("expected gateway_key_id:gw-key-123 in log, got: %s", out)
+	}
+}

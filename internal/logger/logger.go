@@ -20,7 +20,7 @@ const (
 var (
 	urlRegex    = regexp.MustCompile(`https?://[^\s"'<>]+`)
 	bearerRegex = regexp.MustCompile(`(?i)bearer\s+[a-zA-Z0-9_\-\.]+`)
-	keyRegex    = regexp.MustCompile(`(?i)(?:key|token|secret|password|fw_|sk_|nov_)[a-zA-Z0-9_\-\.]+`)
+	keyRegex    = regexp.MustCompile(`(?i)\b(?:key|token|secret|password)[=:\s]+[a-zA-Z0-9_\-\.]+|\b(?:fw_|sk_|nov_|arham_)[a-zA-Z0-9_\-\.]+`)
 )
 
 func SanitizeError(msg string) string {
@@ -30,17 +30,27 @@ func SanitizeError(msg string) string {
 	return msg
 }
 
-func sanitizeValue(key string, val any) any {
-	lowerKey := strings.ToLower(key)
-	if strings.Contains(lowerKey, "auth") ||
+func isSensitiveKey(lowerKey string) bool {
+	if strings.HasSuffix(lowerKey, "_tokens") || lowerKey == "tokens" || strings.HasSuffix(lowerKey, "_id") || lowerKey == "id" {
+		return false
+	}
+	return strings.Contains(lowerKey, "auth") ||
 		strings.Contains(lowerKey, "secret") ||
 		strings.Contains(lowerKey, "password") ||
-		strings.Contains(lowerKey, "token") ||
-		strings.Contains(lowerKey, "key") ||
-		strings.Contains(lowerKey, "prompt") ||
-		strings.Contains(lowerKey, "response") ||
-		strings.Contains(lowerKey, "body") ||
-		strings.Contains(lowerKey, "cookie") {
+		strings.Contains(lowerKey, "cookie") ||
+		lowerKey == "token" ||
+		strings.HasSuffix(lowerKey, "_token") ||
+		lowerKey == "key" ||
+		strings.HasSuffix(lowerKey, "_key") ||
+		lowerKey == "prompt" ||
+		lowerKey == "prompt_text" ||
+		lowerKey == "response" ||
+		lowerKey == "body"
+}
+
+func sanitizeValue(key string, val any) any {
+	lowerKey := strings.ToLower(key)
+	if isSensitiveKey(lowerKey) {
 		return "[REDACTED]"
 	}
 

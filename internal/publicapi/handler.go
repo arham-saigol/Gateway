@@ -229,6 +229,39 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 		attemptDuration := time.Since(attemptStart)
 
 		if err != nil {
+			if errors.Is(r.Context().Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+				cStr := "canceled"
+				_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
+					ID:                 attemptID,
+					RequestID:          gatewayRequestID,
+					ProviderID:         target.ProviderID,
+					ProviderKeyID:      target.ProviderKeyID,
+					MappingID:          target.MappingID,
+					Sequence:           attemptSeq,
+					Status:             "canceled",
+					ErrorCategory:      &cStr,
+					DurationMs:         attemptDuration.Milliseconds(),
+					InputRateSnapshot:  target.InputRateSnapshot,
+					CachedRateSnapshot: target.CachedRateSnapshot,
+					OutputRateSnapshot: target.OutputRateSnapshot,
+					UsageConfidence:    "unavailable",
+					CreatedAt:          attemptStart.UTC(),
+				}, database.RequestRecord{
+					ID:              gatewayRequestID,
+					PublicModelID:   publicModel.ID,
+					GatewayKeyID:    &gwKey.ID,
+					Status:          "canceled",
+					ErrorCategory:   &cStr,
+					Stream:          false,
+					TotalDurationMs: time.Since(reqStartTime).Milliseconds(),
+					UsageConfidence: "unavailable",
+					RetryCount:      attemptSeq - 1,
+					FailoverCount:   attemptSeq - 1,
+					CreatedAt:       reqStartTime.UTC(),
+				})
+				return
+			}
+
 			classification := adapter.ClassifyError(stats.HTTPStatus, err)
 			lastErr = err
 
@@ -606,7 +639,11 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 
 		status := "success"
 		var errCat *string
-		if streamErr != nil {
+		if errors.Is(r.Context().Err(), context.Canceled) || errors.Is(streamErr, context.Canceled) {
+			status = "canceled"
+			c := "canceled"
+			errCat = &c
+		} else if streamErr != nil {
 			status = "error"
 			c := string(adapter.ClassifyError(0, streamErr))
 			errCat = &c

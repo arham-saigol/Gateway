@@ -65,25 +65,18 @@ func (a *GenericOpenAIAdapter) ClassifyError(statusCode int, err error) ErrorCla
 		}
 	}
 
-	switch statusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	switch {
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
 		return ErrorClassificationAuthInvalid
-	case http.StatusTooManyRequests:
+	case statusCode == http.StatusTooManyRequests:
 		return ErrorClassificationRateLimited
-	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	case statusCode >= 500:
 		return ErrorClassificationTransient
-	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+	case statusCode >= 400:
 		return ErrorClassificationBadRequest
+	case statusCode == 0 && err != nil:
+		return ErrorClassificationTransient
 	default:
-		if statusCode >= 500 {
-			return ErrorClassificationTransient
-		}
-		if statusCode >= 400 && statusCode < 500 {
-			return ErrorClassificationBadRequest
-		}
-		if statusCode == 0 && err != nil {
-			return ErrorClassificationTransient
-		}
 		return ErrorClassificationNone
 	}
 }
@@ -165,11 +158,7 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 	reqClone := *req
 	reqClone.Model = upstreamModel
 	reqClone.Stream = true
-	if reqClone.StreamOptions == nil {
-		reqClone.StreamOptions = &StreamOptions{IncludeUsage: true}
-	} else {
-		reqClone.StreamOptions.IncludeUsage = true
-	}
+	reqClone.StreamOptions = &StreamOptions{IncludeUsage: true}
 
 	bodyBytes, err := json.Marshal(reqClone)
 	if err != nil {

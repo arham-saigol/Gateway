@@ -140,8 +140,10 @@ func (a *App) Run() error {
 
 	select {
 	case err := <-errChan:
+		pruneCancel()
 		return fmt.Errorf("server error: %w", err)
 	case sig := <-sigChan:
+		pruneCancel()
 		a.log.Info("received shutdown signal, beginning graceful drain", "signal", sig.String())
 	}
 
