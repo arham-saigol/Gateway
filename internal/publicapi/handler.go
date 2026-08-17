@@ -197,19 +197,16 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request, gwKey *database.GatewayKey, publicModel *database.PublicModel, req *providers.ChatRequest, gatewayRequestID string, reqStartTime time.Time) {
 	maxRetries := h.cfg.Routing.MaxRetriesPerRequest
 	attemptedKeys := make(map[string]bool)
-	var lastErr error
 
 	for attemptSeq := 1; attemptSeq <= maxRetries+1; attemptSeq++ {
 		target, err := h.router.SelectNextTarget(publicModel.ID, attemptedKeys)
 		if err != nil {
-			lastErr = err
 			break
 		}
 		attemptedKeys[target.ProviderKeyID] = true
 
 		adapter, ok := h.router.GetAdapter(target.ProviderID)
 		if !ok {
-			lastErr = fmt.Errorf("adapter for provider %s not found", target.ProviderID)
 			continue
 		}
 
@@ -263,7 +260,6 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 			}
 
 			classification := adapter.ClassifyError(stats.HTTPStatus, err)
-			lastErr = err
 
 			var errCat *string
 			if classification != providers.ErrorClassificationNone {
@@ -365,7 +361,7 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	writeOpenAIError(w, http.StatusBadGateway, fmt.Sprintf("All upstream provider attempts failed: %v", lastErr), "api_error")
+	writeOpenAIError(w, http.StatusBadGateway, "All upstream provider attempts failed.", "api_error")
 }
 
 func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gwKey *database.GatewayKey, publicModel *database.PublicModel, req *providers.ChatRequest, gatewayRequestID string, reqStartTime time.Time) {
@@ -377,19 +373,16 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 
 	maxRetries := h.cfg.Routing.MaxRetriesPerRequest
 	attemptedKeys := make(map[string]bool)
-	var lastErr error
 
 	for attemptSeq := 1; attemptSeq <= maxRetries+1; attemptSeq++ {
 		target, err := h.router.SelectNextTarget(publicModel.ID, attemptedKeys)
 		if err != nil {
-			lastErr = err
 			break
 		}
 		attemptedKeys[target.ProviderKeyID] = true
 
 		adapter, ok := h.router.GetAdapter(target.ProviderID)
 		if !ok {
-			lastErr = fmt.Errorf("adapter for provider %s not found", target.ProviderID)
 			continue
 		}
 
@@ -420,7 +413,6 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			if errors.Is(err, context.Canceled) && r.Context().Err() == nil {
 				classification = providers.ErrorClassificationTimeout
 			}
-			lastErr = err
 
 			var errCat *string
 			if classification != providers.ErrorClassificationNone {
@@ -502,7 +494,6 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			if errors.Is(attemptErr, context.Canceled) && r.Context().Err() == nil {
 				classification = providers.ErrorClassificationTimeout
 			}
-			lastErr = attemptErr
 
 			var errCat *string
 			if classification != providers.ErrorClassificationNone {
@@ -703,7 +694,7 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 		return
 	}
 
-	writeOpenAIError(w, http.StatusBadGateway, fmt.Sprintf("All upstream streaming attempts failed: %v", lastErr), "api_error")
+	writeOpenAIError(w, http.StatusBadGateway, "All upstream streaming attempts failed.", "api_error")
 }
 
 func generateID(prefix string) string {

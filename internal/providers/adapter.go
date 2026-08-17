@@ -200,6 +200,7 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 		buf := make([]byte, 64*1024)
 		scanner.Buffer(buf, 10*1024*1024)
 
+		var doneSeen bool
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
@@ -218,6 +219,7 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 
 			dataContent := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if dataContent == "[DONE]" {
+				doneSeen = true
 				return
 			}
 
@@ -261,6 +263,15 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 			case <-ctx.Done():
 				return
 			case eventChan <- StreamEvent{Error: err, HTTPStatus: resp.StatusCode}:
+			}
+			return
+		}
+
+		if !doneSeen && ctx.Err() == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case eventChan <- StreamEvent{Error: io.ErrUnexpectedEOF, HTTPStatus: resp.StatusCode}:
 			}
 		}
 	}()

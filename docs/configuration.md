@@ -25,7 +25,7 @@ max_idle_conns = 1
 # Path to 32-byte master encryption key
 master_key_path = "/etc/arham-gateway/master.key"
 admin_session_expiry = "24h"
-cookie_secure = false # Set true if accessing directly over HTTPS without local proxy
+cookie_secure = true # Set true for HTTPS deployments (including Cloudflare Tunnel / reverse proxies)
 
 [timeouts]
 first_response_timeout = "30s"
@@ -55,7 +55,7 @@ cleanup_interval = "1h"
 
 ### `[security]`
 - `master_key_path`: Absolute path to the master encryption key used to encrypt provider secrets with AES-256-GCM.
-- `cookie_secure`: Controls the `Secure` flag on admin session cookies.
+- `cookie_secure`: Controls the `Secure` attribute on admin session cookies. Should be `true` whenever the dashboard is accessed over HTTPS (e.g. Cloudflare Tunnel or reverse proxy terminating TLS) to prevent browsers from sending cookies over plaintext HTTP.
 
 ### `[routing]`
 - `max_retries_per_request`: How many times the gateway will try alternative keys or providers on transient failures before downstream response bytes are committed.

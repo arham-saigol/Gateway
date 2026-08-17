@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"arham-gateway/internal/app"
@@ -59,14 +61,64 @@ func PromptPassword(prompt string) (string, error) {
 	return strings.TrimSpace(pass), nil
 }
 
+func ensureServiceAccountAndOwnership(cfg *config.Config) error {
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		return nil
+	}
+
+	userName := "arham-gateway"
+	u, err := user.Lookup(userName)
+	if err != nil {
+		fmt.Printf("Creating system user '%s'...\n", userName)
+		cmd := exec.Command("useradd", "-r", "-U", "-s", "/usr/sbin/nologin", "-M", userName)
+		if _, err := cmd.CombinedOutput(); err != nil {
+			// Fallback if /usr/sbin/nologin doesn't exist
+			cmd = exec.Command("useradd", "-r", "-s", "/bin/false", "-M", userName)
+			_ = cmd.Run()
+		}
+		u, err = user.Lookup(userName)
+		if err != nil {
+			return fmt.Errorf("looking up user %s after creation: %w", userName, err)
+		}
+	}
+
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return fmt.Errorf("invalid uid %s: %w", u.Uid, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return fmt.Errorf("invalid gid %s: %w", u.Gid, err)
+	}
+
+	pathsToChown := []string{
+		filepath.Dir(cfg.Security.MasterKeyPath),
+		cfg.Security.MasterKeyPath,
+		filepath.Dir(cfg.Database.Path),
+		cfg.Database.Path,
+		cfg.Database.Path + "-wal",
+		cfg.Database.Path + "-shm",
+	}
+
+	for _, p := range pathsToChown {
+		if _, err := os.Stat(p); err == nil {
+			_ = os.Chown(p, uid, gid)
+		}
+	}
+
+	return nil
+}
+
 func RunSetup(configPath string) error {
 	fmt.Println("=== Arham Gateway Setup ===")
 
 	cfg := config.DefaultConfig()
 	if configPath != "" {
-		if loaded, err := config.Load(configPath); err == nil {
-			cfg = *loaded
+		loaded, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("loading config %s: %w", configPath, err)
 		}
+		cfg = *loaded
 	}
 
 	// 1. Create directories
@@ -134,7 +186,12 @@ func RunSetup(configPath string) error {
 		break
 	}
 
-	// 5. Systemd unit installation on Linux
+	// 5. Set service account ownership on Linux
+	if err := ensureServiceAccountAndOwnership(&cfg); err != nil {
+		fmt.Printf("Warning: setting service account ownership: %v\n", err)
+	}
+
+	// 6. Systemd unit installation on Linux
 	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
 		unitPath := "/etc/systemd/system/gateway.service"
 		fmt.Printf("Installing systemd service unit to %s...\n", unitPath)

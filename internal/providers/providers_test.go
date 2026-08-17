@@ -222,3 +222,51 @@ func TestProviderAdapterStreamingChatCancellation(t *testing.T) {
 	}
 }
 
+func TestProviderAdapterStreamingChatUnexpectedEOF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		chunk := `{"id":"up-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hi"}}]}`
+		_, _ = w.Write([]byte("data: " + chunk + "\n\n"))
+		flusher.Flush()
+		// Prematurely close response without sending data: [DONE]
+	}))
+	defer server.Close()
+
+	adapter := providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", server.URL, "Bearer")
+
+	req := &providers.ChatRequest{
+		Model: "accounts/fireworks/models/deepseek-v4-flash",
+		Messages: []providers.ChatMessage{
+			{Role: "user", Content: "Hi"},
+		},
+		Stream: true,
+	}
+
+	events, err := adapter.StreamChat(context.Background(), "test-key-123", req.Model, req)
+	if err != nil {
+		t.Fatalf("unexpected stream start error: %v", err)
+	}
+
+	var hasErr bool
+	for ev := range events {
+		if ev.Error != nil {
+			hasErr = true
+			break
+		}
+	}
+
+	if !hasErr {
+		t.Fatalf("expected stream to report error on unexpected EOF before [DONE]")
+	}
+}
+
+

@@ -209,3 +209,48 @@ func TestRouteReorderingAndRateUpdates(t *testing.T) {
 		t.Fatalf("failed to update mapping rates: %d %s", recRates.Code, recRates.Body.String())
 	}
 }
+
+func TestAdminLoginRateLimiting(t *testing.T) {
+	_, _, _, handler := setupAdminTestEnv(t)
+
+	badBody, _ := json.Marshal(map[string]string{"password": "WrongPassword"})
+
+	// First 4 failed attempts should return 401
+	for i := 0; i < 4; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(badBody))
+		req.RemoteAddr = "192.0.2.1:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", i+1, rec.Code)
+		}
+	}
+
+	// 5th failed attempt records threshold and returns 401
+	req5 := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(badBody))
+	req5.RemoteAddr = "192.0.2.1:1234"
+	rec5 := httptest.NewRecorder()
+	handler.ServeHTTP(rec5, req5)
+	if rec5.Code != http.StatusUnauthorized {
+		t.Fatalf("5th attempt: expected 401, got %d", rec5.Code)
+	}
+
+	// 6th attempt from same IP should be blocked with 429
+	req6 := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(badBody))
+	req6.RemoteAddr = "192.0.2.1:1234"
+	rec6 := httptest.NewRecorder()
+	handler.ServeHTTP(rec6, req6)
+	if rec6.Code != http.StatusTooManyRequests {
+		t.Fatalf("6th attempt: expected 429 Too Many Requests, got %d", rec6.Code)
+	}
+
+	// Attempt from another IP should still be allowed (returns 401)
+	reqOther := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(badBody))
+	reqOther.RemoteAddr = "192.0.2.2:1234"
+	recOther := httptest.NewRecorder()
+	handler.ServeHTTP(recOther, reqOther)
+	if recOther.Code != http.StatusUnauthorized {
+		t.Fatalf("other IP attempt: expected 401, got %d", recOther.Code)
+	}
+}
+

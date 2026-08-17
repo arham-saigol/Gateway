@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"arham-gateway/internal/auth"
@@ -16,11 +19,20 @@ import (
 	"arham-gateway/internal/database"
 )
 
+type loginAttempt struct {
+	failedCount  int
+	firstFailed  time.Time
+	blockedUntil time.Time
+}
+
 type Handler struct {
 	db        *database.DB
 	masterKey []byte
 	cfg       *config.Config
 	mux       *http.ServeMux
+	argonSem  chan struct{}
+	rateMu    sync.Mutex
+	attempts  map[string]*loginAttempt
 }
 
 func NewHandler(db *database.DB, masterKey []byte, cfg *config.Config) http.Handler {
@@ -29,6 +41,8 @@ func NewHandler(db *database.DB, masterKey []byte, cfg *config.Config) http.Hand
 		masterKey: masterKey,
 		cfg:       cfg,
 		mux:       http.NewServeMux(),
+		argonSem:  make(chan struct{}, 2),
+		attempts:  make(map[string]*loginAttempt),
 	}
 
 	// Auth Endpoints (Public or Semi-public)
@@ -111,6 +125,23 @@ func generateRandomID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
+func getClientIP(r *http.Request) string {
+	if cf := r.Header.Get("CF-Connecting-IP"); cf != "" {
+		return strings.TrimSpace(cf)
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 // ----------------- Auth Handlers -----------------
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -122,17 +153,61 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := getClientIP(r)
+	now := time.Now()
+
+	h.rateMu.Lock()
+	if att, exists := h.attempts[clientIP]; exists {
+		if now.Before(att.blockedUntil) {
+			h.rateMu.Unlock()
+			http.Error(w, `{"error":"too many failed login attempts, please try again later"}`, http.StatusTooManyRequests)
+			return
+		}
+		if now.Sub(att.firstFailed) > 5*time.Minute {
+			delete(h.attempts, clientIP)
+		}
+	}
+	h.rateMu.Unlock()
+
 	hash, err := h.db.GetAdminPasswordHash()
 	if err != nil {
 		http.Error(w, `{"error":"admin password not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
 
+	// Concurrency bound on expensive Argon2 password hashing
+	select {
+	case h.argonSem <- struct{}{}:
+		defer func() { <-h.argonSem }()
+	default:
+		http.Error(w, `{"error":"server is busy, please try again shortly"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	match, err := auth.VerifyPassword(body.Password, hash)
 	if err != nil || !match {
+		h.rateMu.Lock()
+		att, ok := h.attempts[clientIP]
+		if !ok || now.Sub(att.firstFailed) > 5*time.Minute {
+			h.attempts[clientIP] = &loginAttempt{
+				failedCount: 1,
+				firstFailed:  now,
+			}
+		} else {
+			att.failedCount++
+			if att.failedCount >= 5 {
+				att.blockedUntil = now.Add(1 * time.Minute)
+			}
+		}
+		h.rateMu.Unlock()
+
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
+
+	h.rateMu.Lock()
+	delete(h.attempts, clientIP)
+	h.rateMu.Unlock()
 
 	rawToken, hashedToken, err := auth.GenerateSessionToken()
 	if err != nil {
