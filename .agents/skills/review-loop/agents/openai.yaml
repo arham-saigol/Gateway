@@ -1,0 +1,6 @@
+interface:
+  display_name: "Review Loop"
+  short_description: "Iteratively review and fix code using revi"
+  default_prompt: "Use $review-loop to iteratively review and fix code using revi until clean."
+policy:
+  allow_implicit_invocation: false

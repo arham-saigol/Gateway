@@ -1,0 +1,6 @@
+interface:
+  display_name: "Verify"
+  short_description: "Review, prune, fix, and validate current work"
+  default_prompt: "Use $verify to review and prune the current work, fix every finding, and validate the result."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,21 @@
+# Binaries
+/gateway
+gateway.exe
+*.exe
+*.exe~
+
+# Database & Keys
+*.db
+*.db-wal
+*.db-shm
+*.key
+
+# Go
+/go-pkg/
+
+# Web dependencies & builds
+web/node_modules/
+
+# OS / Editor
+.DS_Store
+Thumbs.db

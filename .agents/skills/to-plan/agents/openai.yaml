@@ -1,0 +1,6 @@
+interface:
+  display_name: "To Plan"
+  short_description: "Save the finalized discussion as a plan"
+  default_prompt: "Use $to-plan to turn our finalized discussion into an implementation-ready plan."
+policy:
+  allow_implicit_invocation: false
