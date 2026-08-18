@@ -40,8 +40,6 @@ type ServerConfig struct {
 type DatabaseConfig struct {
 	Path          string `toml:"path"`
 	BusyTimeoutMs int    `toml:"busy_timeout_ms"`
-	MaxOpenConns  int    `toml:"max_open_conns"`
-	MaxIdleConns  int    `toml:"max_idle_conns"`
 }
 
 type SecurityConfig struct {
@@ -57,9 +55,8 @@ type TimeoutsConfig struct {
 }
 
 type RoutingConfig struct {
-	MaxRetriesPerRequest            int      `toml:"max_retries_per_request"`
-	KeyCooldownDuration             Duration `toml:"key_cooldown_duration"`
-	WarningBalanceThresholdMicroUSD int64    `toml:"warning_balance_threshold_micro_usd"`
+	MaxRetriesPerRequest int      `toml:"max_retries_per_request"`
+	KeyCooldownDuration  Duration `toml:"key_cooldown_duration"`
 }
 
 type RetentionConfig struct {
@@ -89,8 +86,6 @@ func DefaultConfig() Config {
 		Database: DatabaseConfig{
 			Path:          "/var/lib/arham-gateway/gateway.db",
 			BusyTimeoutMs: 5000,
-			MaxOpenConns:  1, // SQLite write concurrency best practice
-			MaxIdleConns:  1,
 		},
 		Security: SecurityConfig{
 			MasterKeyPath:      "/etc/arham-gateway/master.key",
@@ -103,9 +98,8 @@ func DefaultConfig() Config {
 			UpstreamDialTimeout:  Duration(10 * time.Second),
 		},
 		Routing: RoutingConfig{
-			MaxRetriesPerRequest:            3,
-			KeyCooldownDuration:             Duration(30 * time.Second),
-			WarningBalanceThresholdMicroUSD: 0,
+			MaxRetriesPerRequest: 3,
+			KeyCooldownDuration:  Duration(30 * time.Second),
 		},
 		Retention: RetentionConfig{
 			DetailedLogDays: 30,

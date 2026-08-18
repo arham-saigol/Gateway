@@ -18,8 +18,6 @@ idle_timeout = "120s"
 # Path to SQLite database file
 path = "/var/lib/arham-gateway/gateway.db"
 busy_timeout_ms = 5000
-max_open_conns = 1
-max_idle_conns = 1
 
 [security]
 # Path to 32-byte master encryption key
@@ -38,7 +36,6 @@ max_retries_per_request = 3
 # Cooldown duration for temporarily failing keys (rate limit / 5xx)
 key_cooldown_duration = "30s"
 # Balance warning threshold in micro-USD (0 = warn at $0.00)
-warning_balance_threshold_micro_usd = 0
 
 [retention]
 # Detailed request/attempt log retention (days)

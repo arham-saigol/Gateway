@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -186,7 +187,7 @@ func TestChatCompletionsNonStreamingExecution(t *testing.T) {
 	defer mockUpstream.Close()
 
 	// Register custom adapter for fireworks pointing to mockUpstream
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockUpstream.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockUpstream.URL, "Bearer", 0))
 
 	// Add a fireworks key to DB
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
@@ -258,6 +259,34 @@ func TestChatCompletionsNonStreamingExecution(t *testing.T) {
 	}
 }
 
+func TestNonStreamingDoesNotReturnSuccessWhenAccountingFails(t *testing.T) {
+	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = db.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"upstream","object":"chat.completion","created":1,"model":"upstream","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer mockUpstream.Close()
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockUpstream.URL, "Bearer", 0))
+	encSecret, _ := crypto.Encrypt(masterKey, "mock-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID: "key-accounting-failure", ProviderID: "fireworks", EncryptedSecret: encSecret,
+		DisplayName: "Test Key", KeyPrefix: "fw_test...", Status: "active",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(
+		`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Hi"}]}`,
+	)))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected accounting failure to prevent success, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestChatCompletionsStreamingExecution(t *testing.T) {
 	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
 
@@ -276,7 +305,7 @@ func TestChatCompletionsStreamingExecution(t *testing.T) {
 	}))
 	defer mockUpstream.Close()
 
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockUpstream.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockUpstream.URL, "Bearer", 0))
 
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
 	_ = db.CreateProviderKey(database.ProviderKey{
@@ -384,7 +413,7 @@ func TestChatCompletionsNullAndMultimodalContent(t *testing.T) {
 	}))
 	defer mockUpstream.Close()
 
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockUpstream.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockUpstream.URL, "Bearer", 0))
 
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
 	_ = db.CreateProviderKey(database.ProviderKey{
@@ -440,7 +469,7 @@ func TestStreamingErrorDoesNotEmitDone(t *testing.T) {
 	}))
 	defer mockUpstream.Close()
 
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockUpstream.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockUpstream.URL, "Bearer", 0))
 
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-fw-key")
 	_ = db.CreateProviderKey(database.ProviderKey{
@@ -468,13 +497,21 @@ func TestStreamingErrorDoesNotEmitDone(t *testing.T) {
 	}
 }
 
-func TestStreamingFailoverOnInitialStreamError(t *testing.T) {
-	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
+func TestStreamingFirstResponseTimeoutCoversHeadersAndFirstEvent(t *testing.T) {
+	db, masterKey, rawKey, _, _ := setupTestEnvironment(t)
+	cfg := config.DefaultConfig()
+	cfg.Timeouts.FirstResponseTimeout = config.Duration(100 * time.Millisecond)
+	router := routing.NewRouter(db, masterKey, &cfg)
+	handler := publicapi.NewHandler(db, router, &cfg)
 
-	// Provider 1 (fireworks) returns HTTP 500 error on stream initiation
+	// Each phase is shorter than the timeout, but together they exceed it.
 	mockFw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":"fireworks internal error"}`))
+		time.Sleep(70 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(70 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {\"id\":\"fw-late\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Too late\"}}]}\n\n"))
 	}))
 	defer mockFw.Close()
 
@@ -485,13 +522,14 @@ func TestStreamingFailoverOnInitialStreamError(t *testing.T) {
 		flusher := w.(http.Flusher)
 		_, _ = w.Write([]byte("data: {\"id\":\"sf-chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Failover succeeded\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		flusher.Flush()
+		time.Sleep(150 * time.Millisecond)
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
 	}))
 	defer mockSf.Close()
 
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockFw.URL, "Bearer", 0))
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("siliconflow", "SiliconFlow", mockSf.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockFw.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("siliconflow", mockSf.URL, "Bearer", 0))
 
 	// Create fireworks key (pri 1) and siliconflow key (pri 2)
 	encFw, _ := crypto.Encrypt(masterKey, "mock-fw-key")
@@ -594,8 +632,8 @@ func TestFirstResponseTimeoutEnforced(t *testing.T) {
 	defer mockFast.Close()
 
 	router := routing.NewRouter(db, masterKey, &cfg)
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockHanging.URL, "Bearer", 0))
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("siliconflow", "SiliconFlow", mockFast.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockHanging.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("siliconflow", mockFast.URL, "Bearer", 0))
 
 	encFw, _ := crypto.Encrypt(masterKey, "mock-fw-key")
 	_ = db.CreateProviderKey(database.ProviderKey{
@@ -652,7 +690,7 @@ func TestChatCompletionClientCancellation(t *testing.T) {
 	defer mockServer.Close()
 
 	router := routing.NewRouter(db, masterKey, &cfg)
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockServer.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockServer.URL, "Bearer", 0))
 
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-key")
 	_ = db.CreateProviderKey(database.ProviderKey{
@@ -713,7 +751,7 @@ func TestStreamingChatCompletionClientCancellation(t *testing.T) {
 	defer mockServer.Close()
 
 	router := routing.NewRouter(db, masterKey, &cfg)
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockServer.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockServer.URL, "Bearer", 0))
 
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-key")
 	_ = db.CreateProviderKey(database.ProviderKey{
@@ -754,6 +792,53 @@ func TestStreamingChatCompletionClientCancellation(t *testing.T) {
 	}
 }
 
+func TestStreamingCancellationBeforeFirstEventDoesNotRetry(t *testing.T) {
+	db, masterKey, rawKey, _, _ := setupTestEnvironment(t)
+	cfg := config.DefaultConfig()
+	var upstreamCalls atomic.Int32
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		time.Sleep(200 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockServer.Close()
+
+	router := routing.NewRouter(db, masterKey, &cfg)
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockServer.URL, "Bearer", 0))
+	encSecret, _ := crypto.Encrypt(masterKey, "mock-key")
+	_ = db.CreateProviderKey(database.ProviderKey{
+		ID: "key-pre-event-cancel", ProviderID: "fireworks", EncryptedSecret: encSecret,
+		DisplayName: "Test Key", KeyPrefix: "fw_cancel...", Status: "active",
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	handler := publicapi.NewHandler(db, router, &cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(
+		`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Cancel"}],"stream":true}`,
+	))).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	rec := httptest.NewRecorder()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	handler.ServeHTTP(rec, req)
+
+	var status, category string
+	if err := db.Conn().QueryRow(`SELECT status, error_category FROM requests WHERE id LIKE 'chatcmpl-arham-%' ORDER BY created_at DESC LIMIT 1`).Scan(&status, &category); err != nil {
+		t.Fatal(err)
+	}
+	if status != "canceled" || category != "canceled" {
+		t.Fatalf("expected canceled request, got status=%q category=%q", status, category)
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("expected cancellation to stop retries, got %d upstream calls", upstreamCalls.Load())
+	}
+}
+
 func TestStreamingTTFTMeasuredFromRequestStart(t *testing.T) {
 	db, masterKey, rawKey, router, handler := setupTestEnvironment(t)
 
@@ -771,7 +856,7 @@ func TestStreamingTTFTMeasuredFromRequestStart(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", mockServer.URL, "Bearer", 0))
+	router.RegisterAdapter(providers.NewGenericOpenAIAdapter("fireworks", mockServer.URL, "Bearer", 0))
 
 	encSecret, _ := crypto.Encrypt(masterKey, "mock-key")
 	_ = db.CreateProviderKey(database.ProviderKey{
@@ -811,4 +896,3 @@ func TestStreamingTTFTMeasuredFromRequestStart(t *testing.T) {
 		t.Errorf("expected attempt TTFT to be at least ~50ms (measured from attempt start), got %v", attTTFT)
 	}
 }
-

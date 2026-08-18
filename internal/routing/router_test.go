@@ -102,3 +102,38 @@ func TestRouterRoundRobinAndCooldown(t *testing.T) {
 		t.Fatalf("expected error when no active healthy keys are available")
 	}
 }
+
+func TestRouterSkipsUndecryptableKey(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "gateway.db"), 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_ = db.Migrate()
+	_ = db.SeedDefaults()
+
+	masterKey, _ := crypto.GenerateRandomBytes(32)
+	validSecret, _ := crypto.Encrypt(masterKey, "valid-secret")
+	now := time.Now().UTC()
+	for _, key := range []database.ProviderKey{
+		{ID: "corrupt", ProviderID: "fireworks", EncryptedSecret: "not-ciphertext", DisplayName: "Corrupt", KeyPrefix: "bad...", Status: "active", CreatedAt: now.Add(time.Second), UpdatedAt: now},
+		{ID: "valid", ProviderID: "fireworks", EncryptedSecret: validSecret, DisplayName: "Valid", KeyPrefix: "good...", Status: "active", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := db.CreateProviderKey(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.DefaultConfig()
+	target, err := routing.NewRouter(db, masterKey, &cfg).SelectNextTarget("deepseek-v4-flash", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.ProviderKeyID != "valid" || target.DecryptedSecret != "valid-secret" {
+		t.Fatalf("expected valid fallback key, got %#v", target)
+	}
+	corrupt, err := db.GetProviderKey("corrupt")
+	if err != nil || corrupt.Status != "invalid" {
+		t.Fatalf("expected corrupt key to be marked invalid, got %#v, %v", corrupt, err)
+	}
+}

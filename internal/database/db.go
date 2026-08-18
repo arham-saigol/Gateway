@@ -221,24 +221,6 @@ func (db *DB) AddBalanceAdjustment(adj BalanceAdjustment) error {
 	return err
 }
 
-func (db *DB) ListBalanceAdjustments(providerKeyID string) ([]BalanceAdjustment, error) {
-	rows, err := db.conn.Query("SELECT id, provider_key_id, amount_micro_usd, note, created_at FROM balance_adjustments WHERE provider_key_id = ? ORDER BY created_at DESC", providerKeyID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	adjustments := make([]BalanceAdjustment, 0)
-	for rows.Next() {
-		var a BalanceAdjustment
-		if err := rows.Scan(&a.ID, &a.ProviderKeyID, &a.AmountMicroUSD, &a.Note, &a.CreatedAt); err != nil {
-			return nil, err
-		}
-		adjustments = append(adjustments, a)
-	}
-	return adjustments, nil
-}
-
 func (db *DB) GetKeyBalanceSummaries() ([]KeyBalanceSummary, error) {
 	query := `
 		SELECT 
@@ -295,28 +277,6 @@ func (db *DB) ListProviderModelMappings() ([]ProviderModelMapping, error) {
 	return mappings, nil
 }
 
-func (db *DB) GetProviderModelMapping(id string) (*ProviderModelMapping, error) {
-	var m ProviderModelMapping
-	err := db.conn.QueryRow(`
-		SELECT id, provider_id, public_model_id, upstream_model_id,
-		       supports_streaming, supports_tools,
-		       input_rate_per_m_tokens, cached_rate_per_m_tokens, output_rate_per_m_tokens,
-		       currency, enabled, created_at, updated_at
-		FROM provider_model_mappings
-		WHERE id = ?
-	`, id).Scan(&m.ID, &m.ProviderID, &m.PublicModelID, &m.UpstreamModelID,
-		&m.SupportsStreaming, &m.SupportsTools,
-		&m.InputRatePerMTokens, &m.CachedRatePerMTokens, &m.OutputRatePerMTokens,
-		&m.Currency, &m.Enabled, &m.CreatedAt, &m.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	return &m, nil
-}
-
 func (db *DB) UpdateMappingRates(id string, inputRate, cachedRate, outputRate int64) error {
 	_, err := db.conn.Exec(`
 		UPDATE provider_model_mappings
@@ -329,7 +289,8 @@ func (db *DB) UpdateMappingRates(id string, inputRate, cachedRate, outputRate in
 // Routes
 func (db *DB) GetRoutesForModel(publicModelID string) ([]RoutingEntry, error) {
 	rows, err := db.conn.Query(`
-		SELECT re.id, re.public_model_id, re.mapping_id, re.priority, pmm.provider_id, pmm.upstream_model_id, pmm.enabled
+		SELECT re.id, re.public_model_id, re.mapping_id, re.priority, pmm.provider_id, pmm.upstream_model_id,
+		       pmm.input_rate_per_m_tokens, pmm.cached_rate_per_m_tokens, pmm.output_rate_per_m_tokens, pmm.enabled
 		FROM routing_entries re
 		JOIN provider_model_mappings pmm ON re.mapping_id = pmm.id
 		WHERE re.public_model_id = ?
@@ -343,7 +304,8 @@ func (db *DB) GetRoutesForModel(publicModelID string) ([]RoutingEntry, error) {
 	entries := make([]RoutingEntry, 0)
 	for rows.Next() {
 		var e RoutingEntry
-		if err := rows.Scan(&e.ID, &e.PublicModelID, &e.MappingID, &e.Priority, &e.ProviderID, &e.UpstreamModelID, &e.Enabled); err != nil {
+		if err := rows.Scan(&e.ID, &e.PublicModelID, &e.MappingID, &e.Priority, &e.ProviderID, &e.UpstreamModelID,
+			&e.InputRatePerMTokens, &e.CachedRatePerMTokens, &e.OutputRatePerMTokens, &e.Enabled); err != nil {
 			return nil, err
 		}
 		entries = append(entries, e)
@@ -538,6 +500,19 @@ func (db *DB) FinalizeAttemptAndRollup(att RequestAttemptRecord, req RequestReco
 	if att.Sequence > 1 {
 		retries = 1
 	}
+	failovers := 0
+	if att.Sequence > 1 {
+		var previousMappingID string
+		err := tx.QueryRow(`
+			SELECT mapping_id FROM request_attempts
+			WHERE request_id = ? AND sequence = ?
+		`, att.RequestID, att.Sequence-1).Scan(&previousMappingID)
+		if err == nil && previousMappingID != att.MappingID {
+			failovers = 1
+		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("reading previous attempt: %w", err)
+		}
+	}
 
 	now := time.Now().UTC()
 
@@ -547,12 +522,13 @@ func (db *DB) FinalizeAttemptAndRollup(att RequestAttemptRecord, req RequestReco
 			total_requests, successful_requests, failed_requests, retries, failovers,
 			input_tokens, cached_input_tokens, output_tokens, known_cost_micro_usd, unknown_cost_attempts,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			total_requests = total_requests + excluded.total_requests,
 			successful_requests = successful_requests + excluded.successful_requests,
 			failed_requests = failed_requests + excluded.failed_requests,
 			retries = retries + excluded.retries,
+			failovers = failovers + excluded.failovers,
 			input_tokens = input_tokens + excluded.input_tokens,
 			cached_input_tokens = cached_input_tokens + excluded.cached_input_tokens,
 			output_tokens = output_tokens + excluded.output_tokens,
@@ -560,7 +536,7 @@ func (db *DB) FinalizeAttemptAndRollup(att RequestAttemptRecord, req RequestReco
 			unknown_cost_attempts = unknown_cost_attempts + excluded.unknown_cost_attempts,
 			updated_at = excluded.updated_at
 	`, rollupID, dateUTC, att.ProviderKeyID, att.MappingID, req.PublicModelID, req.GatewayKeyID,
-		isInitial, isSuccess, isFail, retries,
+		isInitial, isSuccess, isFail, retries, failovers,
 		inTokens, cachedTokens, outTokens, costMicro, unknownCost, now)
 	if err != nil {
 		return fmt.Errorf("upserting daily rollup: %w", err)

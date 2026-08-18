@@ -40,27 +40,6 @@ PrivateTmp=true
 WantedBy=multi-user.target
 `
 
-const SystemdUnitContent = `[Unit]
-Description=Arham Gateway OpenAI-Compatible Model Gateway
-After=network.target
-
-[Service]
-Type=simple
-User=arham-gateway
-Group=arham-gateway
-ExecStart=/usr/local/bin/gateway serve
-Restart=always
-RestartSec=5s
-LimitNOFILE=65536
-NoNewPrivileges=true
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-`
-
 func PromptPassword(prompt string) (string, error) {
 	fmt.Print(prompt)
 	fd := int(os.Stdin.Fd())
@@ -227,9 +206,15 @@ func RunSetup(configPath string) error {
 		}
 
 		unitContent := fmt.Sprintf(SystemdUnitTemplate, execStart)
-		_ = os.WriteFile(unitPath, []byte(unitContent), 0644)
-		_ = exec.Command("systemctl", "daemon-reload").Run()
-		_ = exec.Command("systemctl", "enable", "gateway").Run()
+		if err := os.WriteFile(unitPath, []byte(unitContent), 0644); err != nil {
+			return fmt.Errorf("writing systemd unit: %w", err)
+		}
+		if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+			return fmt.Errorf("reloading systemd: %w", err)
+		}
+		if err := exec.Command("systemctl", "enable", "gateway").Run(); err != nil {
+			return fmt.Errorf("enabling gateway service: %w", err)
+		}
 		fmt.Println("Systemd service 'gateway' installed and enabled.")
 
 		// Check for cloudflared

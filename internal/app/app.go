@@ -23,12 +23,10 @@ import (
 )
 
 type App struct {
-	cfg       *config.Config
-	db        *database.DB
-	masterKey []byte
-	router    *routing.Router
-	server    *http.Server
-	log       *slog.Logger
+	cfg    *config.Config
+	db     *database.DB
+	server *http.Server
+	log    *slog.Logger
 }
 
 func New(configPath string) (*App, error) {
@@ -95,12 +93,10 @@ func New(configPath string) (*App, error) {
 	}
 
 	return &App{
-		cfg:       cfg,
-		db:        db,
-		masterKey: masterKey,
-		router:    router,
-		server:    srv,
-		log:       log,
+		cfg:    cfg,
+		db:     db,
+		server: srv,
+		log:    log,
 	}, nil
 }
 
@@ -112,20 +108,22 @@ func (a *App) Run() error {
 	// Background log retention pruning loop
 	pruneCtx, pruneCancel := context.WithCancel(context.Background())
 	defer pruneCancel()
-	go func() {
-		ticker := time.NewTicker(a.cfg.Retention.CleanupInterval.Duration())
-		defer ticker.Stop()
-		for {
-			select {
-			case <-pruneCtx.Done():
-				return
-			case <-ticker.C:
-				if deleted, err := a.db.PruneDetailedLogs(a.cfg.Retention.DetailedLogDays); err == nil && deleted > 0 {
-					a.log.Info("pruned old detailed request logs", "deleted_rows", deleted)
+	if interval := a.cfg.Retention.CleanupInterval.Duration(); interval > 0 {
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-pruneCtx.Done():
+					return
+				case <-ticker.C:
+					if deleted, err := a.db.PruneDetailedLogs(a.cfg.Retention.DetailedLogDays); err == nil && deleted > 0 {
+						a.log.Info("pruned old detailed request logs", "deleted_rows", deleted)
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	errChan := make(chan error, 1)
 	go func() {

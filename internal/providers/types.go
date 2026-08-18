@@ -126,7 +126,6 @@ type ChatCompletionChunk struct {
 }
 
 type AttemptStats struct {
-	TTFT              time.Duration
 	Duration          time.Duration
 	InputTokens       int64
 	CachedInputTokens int64
@@ -139,13 +138,11 @@ type StreamEvent struct {
 	Chunk      *ChatCompletionChunk
 	Error      error
 	HTTPStatus int
-	TTFT       time.Duration
 	IsFirst    bool
 }
 
 type ProviderAdapter interface {
 	ID() string
-	Name() string
 	ExecuteChat(ctx context.Context, key string, upstreamModel string, req *ChatRequest) (*ChatResponse, *AttemptStats, error)
 	StreamChat(ctx context.Context, key string, upstreamModel string, req *ChatRequest) (<-chan StreamEvent, error)
 	ClassifyError(statusCode int, err error) ErrorClassification

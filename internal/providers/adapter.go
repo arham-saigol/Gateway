@@ -16,13 +16,12 @@ import (
 
 type GenericOpenAIAdapter struct {
 	id               string
-	name             string
 	baseURL          string
 	authHeaderPrefix string
 	client           *http.Client
 }
 
-func NewGenericOpenAIAdapter(id, name, baseURL, authHeaderPrefix string, dialTimeout time.Duration) *GenericOpenAIAdapter {
+func NewGenericOpenAIAdapter(id, baseURL, authHeaderPrefix string, dialTimeout time.Duration) *GenericOpenAIAdapter {
 	if dialTimeout <= 0 {
 		dialTimeout = 10 * time.Second
 	}
@@ -41,7 +40,6 @@ func NewGenericOpenAIAdapter(id, name, baseURL, authHeaderPrefix string, dialTim
 
 	return &GenericOpenAIAdapter{
 		id:               id,
-		name:             name,
 		baseURL:          strings.TrimRight(baseURL, "/"),
 		authHeaderPrefix: authHeaderPrefix,
 		client: &http.Client{
@@ -53,10 +51,6 @@ func NewGenericOpenAIAdapter(id, name, baseURL, authHeaderPrefix string, dialTim
 
 func (a *GenericOpenAIAdapter) ID() string {
 	return a.id
-}
-
-func (a *GenericOpenAIAdapter) Name() string {
-	return a.name
 }
 
 type HTTPStatusError struct {
@@ -173,8 +167,6 @@ func (a *GenericOpenAIAdapter) ExecuteChat(ctx context.Context, key string, upst
 }
 
 func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstreamModel string, req *ChatRequest) (<-chan StreamEvent, error) {
-	streamStart := time.Now()
-
 	reqClone := *req
 	reqClone.Model = upstreamModel
 	reqClone.Stream = true
@@ -248,7 +240,6 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 				continue
 			}
 
-			var ttft time.Duration
 			isFirst := false
 			if !firstTokenSeen {
 				hasContent := false
@@ -261,7 +252,6 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 				if hasContent {
 					firstTokenSeen = true
 					isFirst = true
-					ttft = time.Since(streamStart)
 				}
 			}
 
@@ -271,7 +261,6 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 			case eventChan <- StreamEvent{
 				Chunk:      &chunk,
 				HTTPStatus: resp.StatusCode,
-				TTFT:       ttft,
 				IsFirst:    isFirst,
 			}:
 			}
@@ -300,17 +289,17 @@ func (a *GenericOpenAIAdapter) StreamChat(ctx context.Context, key string, upstr
 
 // Built-in adapter factories
 func NewFireworksAdapter(dialTimeout time.Duration) ProviderAdapter {
-	return NewGenericOpenAIAdapter("fireworks", "Fireworks AI", "https://api.fireworks.ai/inference/v1", "Bearer", dialTimeout)
+	return NewGenericOpenAIAdapter("fireworks", "https://api.fireworks.ai/inference/v1", "Bearer", dialTimeout)
 }
 
 func NewSiliconFlowAdapter(dialTimeout time.Duration) ProviderAdapter {
-	return NewGenericOpenAIAdapter("siliconflow", "SiliconFlow", "https://api.siliconflow.cn/v1", "Bearer", dialTimeout)
+	return NewGenericOpenAIAdapter("siliconflow", "https://api.siliconflow.cn/v1", "Bearer", dialTimeout)
 }
 
 func NewNovitaAdapter(dialTimeout time.Duration) ProviderAdapter {
-	return NewGenericOpenAIAdapter("novita", "Novita AI", "https://api.novita.ai/v3/openai", "Bearer", dialTimeout)
+	return NewGenericOpenAIAdapter("novita", "https://api.novita.ai/v3/openai", "Bearer", dialTimeout)
 }
 
 func NewBasetenAdapter(dialTimeout time.Duration) ProviderAdapter {
-	return NewGenericOpenAIAdapter("baseten", "Baseten", "https://bridge.baseten.co/v1", "Api-Key", dialTimeout)
+	return NewGenericOpenAIAdapter("baseten", "https://bridge.baseten.co/v1", "Api-Key", dialTimeout)
 }

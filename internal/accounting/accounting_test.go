@@ -1,10 +1,17 @@
 package accounting_test
 
 import (
+	"math"
 	"testing"
 
 	"arham-gateway/internal/accounting"
 )
+
+func TestCostOverflowIsUnavailable(t *testing.T) {
+	if _, ok := accounting.CalculateAttemptCost(math.MaxInt64, 0, 0, math.MaxInt64, 0, 0); ok {
+		t.Fatal("expected overflowing cost to be unavailable")
+	}
+}
 
 func TestCalculateCostExactIntegerArithmetic(t *testing.T) {
 	// Scenario:

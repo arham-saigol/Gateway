@@ -150,6 +150,7 @@ func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	reqStartTime := time.Now()
 	gwKey, err := h.authenticateGatewayKey(r)
 	if err != nil {
 		writeOpenAIError(w, http.StatusUnauthorized, "Incorrect API key provided.", "invalid_request_error")
@@ -185,7 +186,6 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	gatewayRequestID := generateID("chatcmpl-arham-")
-	reqStartTime := time.Now()
 
 	if reqBody.Stream {
 		h.handleStreamingChat(w, r, gwKey, publicModel, &reqBody, gatewayRequestID, reqStartTime)
@@ -197,6 +197,8 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request, gwKey *database.GatewayKey, publicModel *database.PublicModel, req *providers.ChatRequest, gatewayRequestID string, reqStartTime time.Time) {
 	maxRetries := h.cfg.Routing.MaxRetriesPerRequest
 	attemptedKeys := make(map[string]bool)
+	previousMappingID := ""
+	failoverCount := 0
 
 	for attemptSeq := 1; attemptSeq <= maxRetries+1; attemptSeq++ {
 		target, err := h.router.SelectNextTarget(publicModel.ID, attemptedKeys)
@@ -209,6 +211,10 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 		if !ok {
 			continue
 		}
+		if previousMappingID != "" && previousMappingID != target.MappingID {
+			failoverCount++
+		}
+		previousMappingID = target.MappingID
 
 		attemptID := generateID("att-")
 		attemptStart := time.Now()
@@ -253,7 +259,7 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 					TotalDurationMs: time.Since(reqStartTime).Milliseconds(),
 					UsageConfidence: "unavailable",
 					RetryCount:      attemptSeq - 1,
-					FailoverCount:   attemptSeq - 1,
+					FailoverCount:   failoverCount,
 					CreatedAt:       reqStartTime.UTC(),
 				})
 				return
@@ -293,7 +299,7 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 				TotalDurationMs: time.Since(reqStartTime).Milliseconds(),
 				UsageConfidence: "unavailable",
 				RetryCount:      attemptSeq - 1,
-				FailoverCount:   attemptSeq - 1,
+				FailoverCount:   failoverCount,
 				CreatedAt:       reqStartTime.UTC(),
 			})
 
@@ -315,7 +321,7 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 			costMicro = &c
 		}
 
-		_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
+		if err := h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
 			ID:                 attemptID,
 			RequestID:          gatewayRequestID,
 			ProviderID:         target.ProviderID,
@@ -347,9 +353,12 @@ func (h *Handler) handleNonStreamingChat(w http.ResponseWriter, r *http.Request,
 			TotalCostMicroUSD: costMicro,
 			UsageConfidence:   stats.UsageConfidence,
 			RetryCount:        attemptSeq - 1,
-			FailoverCount:     attemptSeq - 1,
+			FailoverCount:     failoverCount,
 			CreatedAt:         reqStartTime.UTC(),
-		})
+		}); err != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "Failed to record completed request.", "api_error")
+			return
+		}
 
 		_ = h.db.UpdateGatewayKeyLastUsed(gwKey.ID)
 		_ = h.db.UpdateProviderKeyLastUsed(target.ProviderKeyID)
@@ -373,6 +382,8 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 
 	maxRetries := h.cfg.Routing.MaxRetriesPerRequest
 	attemptedKeys := make(map[string]bool)
+	previousMappingID := ""
+	failoverCount := 0
 
 	for attemptSeq := 1; attemptSeq <= maxRetries+1; attemptSeq++ {
 		target, err := h.router.SelectNextTarget(publicModel.ID, attemptedKeys)
@@ -385,163 +396,90 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 		if !ok {
 			continue
 		}
+		if previousMappingID != "" && previousMappingID != target.MappingID {
+			failoverCount++
+		}
+		previousMappingID = target.MappingID
 
 		attemptID := generateID("att-")
 		attemptStart := time.Now()
 
-		streamCtx, cancelStream := context.WithCancel(r.Context())
-		var firstRespTimer *time.Timer
+		streamCtx, cancelStream := context.WithCancelCause(r.Context())
+		var firstResponseTimer *time.Timer
 		if timeout := h.cfg.Timeouts.FirstResponseTimeout.Duration(); timeout > 0 {
-			firstRespTimer = time.AfterFunc(timeout, func() {
-				cancelStream()
+			firstResponseTimer = time.AfterFunc(timeout, func() {
+				cancelStream(context.DeadlineExceeded)
 			})
 		}
 
-		eventChan, err := adapter.StreamChat(streamCtx, target.DecryptedSecret, target.UpstreamModelID, req)
-		if firstRespTimer != nil {
-			firstRespTimer.Stop()
-		}
-
-		if err != nil {
-			cancelStream()
-			httpStatus := 0
+		eventChan, attemptErr := adapter.StreamChat(streamCtx, target.DecryptedSecret, target.UpstreamModelID, req)
+		var firstEv providers.StreamEvent
+		httpStatus := 0
+		if attemptErr == nil {
+			select {
+			case ev, open := <-eventChan:
+				if !open {
+					attemptErr = streamCtx.Err()
+					if attemptErr == nil {
+						attemptErr = errors.New("upstream stream closed before emitting events")
+					}
+				} else if ev.Error != nil {
+					attemptErr = ev.Error
+					httpStatus = ev.HTTPStatus
+				} else {
+					firstEv = ev
+				}
+			case <-streamCtx.Done():
+				attemptErr = context.Cause(streamCtx)
+			}
+		} else {
 			var httpErr *providers.HTTPStatusError
-			if errors.As(err, &httpErr) {
+			if errors.As(attemptErr, &httpErr) {
 				httpStatus = httpErr.StatusCode
 			}
-			classification := adapter.ClassifyError(httpStatus, err)
-			if errors.Is(err, context.Canceled) && r.Context().Err() == nil {
-				classification = providers.ErrorClassificationTimeout
-			}
-
-			var errCat *string
-			if classification != providers.ErrorClassificationNone {
-				cStr := string(classification)
-				errCat = &cStr
-			}
-
-			attemptDuration := time.Since(attemptStart)
-			var httpStatusPtr *int
-			if httpStatus > 0 {
-				httpStatusPtr = &httpStatus
-			}
-			_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
-				ID:                 attemptID,
-				RequestID:          gatewayRequestID,
-				ProviderID:         target.ProviderID,
-				ProviderKeyID:      target.ProviderKeyID,
-				MappingID:          target.MappingID,
-				Sequence:           attemptSeq,
-				Status:             "error",
-				HTTPStatus:         httpStatusPtr,
-				ErrorCategory:      errCat,
-				DurationMs:         attemptDuration.Milliseconds(),
-				InputRateSnapshot:  target.InputRateSnapshot,
-				CachedRateSnapshot: target.CachedRateSnapshot,
-				OutputRateSnapshot: target.OutputRateSnapshot,
-				UsageConfidence:    "unavailable",
-				CreatedAt:          attemptStart.UTC(),
-			}, database.RequestRecord{
-				ID:              gatewayRequestID,
-				PublicModelID:   publicModel.ID,
-				GatewayKeyID:    &gwKey.ID,
-				Status:          "error",
-				ErrorCategory:   errCat,
-				Stream:          true,
-				TotalDurationMs: time.Since(reqStartTime).Milliseconds(),
-				UsageConfidence: "unavailable",
-				RetryCount:      attemptSeq - 1,
-				FailoverCount:   attemptSeq - 1,
-				CreatedAt:       reqStartTime.UTC(),
-			})
-
-			if classification == providers.ErrorClassificationAuthInvalid {
-				_ = h.router.MarkKeyAuthInvalid(target.ProviderKeyID, "Authentication failure with upstream provider")
-			} else if classification.IsRetryable() {
-				h.router.MarkKeyCooldown(target.ProviderKeyID, h.cfg.Routing.KeyCooldownDuration.Duration())
-			}
-
-			if !classification.IsRetryable() {
-				writeOpenAIError(w, http.StatusBadRequest, "Invalid request parameters for upstream model.", "invalid_request_error")
-				return
-			}
-			continue
+		}
+		if firstResponseTimer != nil {
+			firstResponseTimer.Stop()
 		}
 
-		if timeout := h.cfg.Timeouts.FirstResponseTimeout.Duration(); timeout > 0 {
-			firstRespTimer = time.AfterFunc(timeout, func() {
-				cancelStream()
-			})
-		}
-		firstEv, ok := <-eventChan
-		if firstRespTimer != nil {
-			firstRespTimer.Stop()
-		}
-
-		if !ok || firstEv.Error != nil {
-			cancelStream()
-			var attemptErr error
-			var httpStatus int
-			if !ok {
-				attemptErr = errors.New("upstream stream closed before emitting events")
-				httpStatus = 0
-			} else {
-				attemptErr = firstEv.Error
-				httpStatus = firstEv.HTTPStatus
-			}
-
+		if attemptErr != nil {
+			cancelStream(attemptErr)
+			status := "error"
 			classification := adapter.ClassifyError(httpStatus, attemptErr)
-			if errors.Is(attemptErr, context.Canceled) && r.Context().Err() == nil {
+			if r.Context().Err() != nil {
+				status = "canceled"
+				classification = providers.ErrorClassification("canceled")
+			} else if errors.Is(context.Cause(streamCtx), context.DeadlineExceeded) || errors.Is(attemptErr, context.DeadlineExceeded) {
 				classification = providers.ErrorClassificationTimeout
 			}
-
-			var errCat *string
-			if classification != providers.ErrorClassificationNone {
-				cStr := string(classification)
-				errCat = &cStr
-			}
-
-			attemptDuration := time.Since(attemptStart)
+			category := string(classification)
 			var httpStatusPtr *int
 			if httpStatus > 0 {
 				httpStatusPtr = &httpStatus
 			}
+
 			_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
-				ID:                 attemptID,
-				RequestID:          gatewayRequestID,
-				ProviderID:         target.ProviderID,
-				ProviderKeyID:      target.ProviderKeyID,
-				MappingID:          target.MappingID,
-				Sequence:           attemptSeq,
-				Status:             "error",
-				HTTPStatus:         httpStatusPtr,
-				ErrorCategory:      errCat,
-				DurationMs:         attemptDuration.Milliseconds(),
-				InputRateSnapshot:  target.InputRateSnapshot,
-				CachedRateSnapshot: target.CachedRateSnapshot,
-				OutputRateSnapshot: target.OutputRateSnapshot,
-				UsageConfidence:    "unavailable",
-				CreatedAt:          attemptStart.UTC(),
+				ID: attemptID, RequestID: gatewayRequestID, ProviderID: target.ProviderID,
+				ProviderKeyID: target.ProviderKeyID, MappingID: target.MappingID, Sequence: attemptSeq,
+				Status: status, HTTPStatus: httpStatusPtr, ErrorCategory: &category,
+				DurationMs: time.Since(attemptStart).Milliseconds(), InputRateSnapshot: target.InputRateSnapshot,
+				CachedRateSnapshot: target.CachedRateSnapshot, OutputRateSnapshot: target.OutputRateSnapshot,
+				UsageConfidence: "unavailable", CreatedAt: attemptStart.UTC(),
 			}, database.RequestRecord{
-				ID:              gatewayRequestID,
-				PublicModelID:   publicModel.ID,
-				GatewayKeyID:    &gwKey.ID,
-				Status:          "error",
-				ErrorCategory:   errCat,
-				Stream:          true,
-				TotalDurationMs: time.Since(reqStartTime).Milliseconds(),
-				UsageConfidence: "unavailable",
-				RetryCount:      attemptSeq - 1,
-				FailoverCount:   attemptSeq - 1,
-				CreatedAt:       reqStartTime.UTC(),
+				ID: gatewayRequestID, PublicModelID: publicModel.ID, GatewayKeyID: &gwKey.ID,
+				Status: status, ErrorCategory: &category, Stream: true,
+				TotalDurationMs: time.Since(reqStartTime).Milliseconds(), UsageConfidence: "unavailable",
+				RetryCount: attemptSeq - 1, FailoverCount: failoverCount, CreatedAt: reqStartTime.UTC(),
 			})
 
+			if status == "canceled" {
+				return
+			}
 			if classification == providers.ErrorClassificationAuthInvalid {
 				_ = h.router.MarkKeyAuthInvalid(target.ProviderKeyID, "Authentication failure with upstream provider")
 			} else if classification.IsRetryable() {
 				h.router.MarkKeyCooldown(target.ProviderKeyID, h.cfg.Routing.KeyCooldownDuration.Duration())
 			}
-
 			if !classification.IsRetryable() {
 				writeOpenAIError(w, http.StatusBadRequest, "Invalid request parameters for upstream model.", "invalid_request_error")
 				return
@@ -549,7 +487,7 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			continue
 		}
 
-		defer cancelStream()
+		defer cancelStream(context.Canceled)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -611,11 +549,6 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			}
 		}
 
-		if streamErr == nil {
-			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-			flusher.Flush()
-		}
-
 		attemptDuration := time.Since(attemptStart)
 		var inTokens, cachedTokens, outTokens int64
 		usageConf := "unavailable"
@@ -652,7 +585,7 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			outPtr = &outTokens
 		}
 
-		_ = h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
+		if err := h.db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
 			ID:                 attemptID,
 			RequestID:          gatewayRequestID,
 			ProviderID:         target.ProviderID,
@@ -687,13 +620,17 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			TotalCostMicroUSD: costMicro,
 			UsageConfidence:   usageConf,
 			RetryCount:        attemptSeq - 1,
-			FailoverCount:     attemptSeq - 1,
+			FailoverCount:     failoverCount,
 			CreatedAt:         reqStartTime.UTC(),
-		})
+		}); err != nil {
+			return
+		}
 
 		if status == "success" {
 			_ = h.db.UpdateGatewayKeyLastUsed(gwKey.ID)
 			_ = h.db.UpdateProviderKeyLastUsed(target.ProviderKeyID)
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+			flusher.Flush()
 		}
 
 		return

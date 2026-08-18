@@ -10,25 +10,25 @@ type Provider struct {
 }
 
 type ProviderKey struct {
-	ID                     string     `json:"id"`
-	ProviderID             string     `json:"provider_id"`
-	EncryptedSecret        string     `json:"-"`
-	DisplayName            string     `json:"display_name"`
-	KeyPrefix              string     `json:"key_prefix"`
+	ID                      string     `json:"id"`
+	ProviderID              string     `json:"provider_id"`
+	EncryptedSecret         string     `json:"-"`
+	DisplayName             string     `json:"display_name"`
+	KeyPrefix               string     `json:"key_prefix"`
 	StartingBalanceMicroUSD int64      `json:"starting_balance_micro_usd"`
-	Status                 string     `json:"status"` // active, invalid, disabled, exhausted
-	SafeLastError          *string    `json:"safe_last_error,omitempty"`
-	LastUsedAt             *time.Time `json:"last_used_at,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	Status                  string     `json:"status"` // active, invalid, disabled, exhausted
+	SafeLastError           *string    `json:"safe_last_error,omitempty"`
+	LastUsedAt              *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
 type BalanceAdjustment struct {
-	ID              string    `json:"id"`
-	ProviderKeyID   string    `json:"provider_key_id"`
-	AmountMicroUSD  int64     `json:"amount_micro_usd"`
-	Note            string    `json:"note"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	ProviderKeyID  string    `json:"provider_key_id"`
+	AmountMicroUSD int64     `json:"amount_micro_usd"`
+	Note           string    `json:"note"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type PublicModel struct {
@@ -56,13 +56,16 @@ type ProviderModelMapping struct {
 }
 
 type RoutingEntry struct {
-	ID            string `json:"id"`
-	PublicModelID string `json:"public_model_id"`
-	MappingID     string `json:"mapping_id"`
-	Priority      int    `json:"priority"`
-	ProviderID    string `json:"provider_id"`
-	UpstreamModelID string `json:"upstream_model_id"`
-	Enabled       bool   `json:"enabled"`
+	ID                   string `json:"id"`
+	PublicModelID        string `json:"public_model_id"`
+	MappingID            string `json:"mapping_id"`
+	Priority             int    `json:"priority"`
+	ProviderID           string `json:"provider_id"`
+	UpstreamModelID      string `json:"upstream_model_id"`
+	InputRatePerMTokens  int64  `json:"-"`
+	CachedRatePerMTokens int64  `json:"-"`
+	OutputRatePerMTokens int64  `json:"-"`
+	Enabled              bool   `json:"enabled"`
 }
 
 type GatewayKey struct {
@@ -77,22 +80,22 @@ type GatewayKey struct {
 }
 
 type RequestRecord struct {
-	ID                string     `json:"id"`
-	PublicModelID     string     `json:"public_model_id"`
-	GatewayKeyID      *string    `json:"gateway_key_id,omitempty"`
-	Status            string     `json:"status"` // success, error, canceled
-	ErrorCategory     *string    `json:"error_category,omitempty"`
-	Stream            bool       `json:"stream"`
-	TTFTMs            *int64     `json:"ttft_ms,omitempty"`
-	TotalDurationMs   int64      `json:"total_duration_ms"`
-	InputTokens       *int64     `json:"input_tokens,omitempty"`
-	CachedInputTokens *int64     `json:"cached_input_tokens,omitempty"`
-	OutputTokens      *int64     `json:"output_tokens,omitempty"`
-	TotalCostMicroUSD *int64     `json:"total_cost_micro_usd,omitempty"`
-	UsageConfidence   string     `json:"usage_confidence"`
-	RetryCount        int        `json:"retry_count"`
-	FailoverCount     int        `json:"failover_count"`
-	CreatedAt         time.Time  `json:"created_at"`
+	ID                string    `json:"id"`
+	PublicModelID     string    `json:"public_model_id"`
+	GatewayKeyID      *string   `json:"gateway_key_id,omitempty"`
+	Status            string    `json:"status"` // success, error, canceled
+	ErrorCategory     *string   `json:"error_category,omitempty"`
+	Stream            bool      `json:"stream"`
+	TTFTMs            *int64    `json:"ttft_ms,omitempty"`
+	TotalDurationMs   int64     `json:"total_duration_ms"`
+	InputTokens       *int64    `json:"input_tokens,omitempty"`
+	CachedInputTokens *int64    `json:"cached_input_tokens,omitempty"`
+	OutputTokens      *int64    `json:"output_tokens,omitempty"`
+	TotalCostMicroUSD *int64    `json:"total_cost_micro_usd,omitempty"`
+	UsageConfidence   string    `json:"usage_confidence"`
+	RetryCount        int       `json:"retry_count"`
+	FailoverCount     int       `json:"failover_count"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 type RequestAttemptRecord struct {
@@ -120,13 +123,13 @@ type RequestAttemptRecord struct {
 }
 
 type KeyBalanceSummary struct {
-	ProviderKeyID          string  `json:"provider_key_id"`
-	ProviderID             string  `json:"provider_id"`
-	DisplayName            string  `json:"display_name"`
-	KeyPrefix              string  `json:"key_prefix"`
-	StartingBalanceMicroUSD int64   `json:"starting_balance_micro_usd"`
-	AdjustmentsMicroUSD    int64   `json:"adjustments_micro_usd"`
-	KnownSpendMicroUSD     int64   `json:"known_spend_micro_usd"`
-	EstimatedRemainingMicroUSD int64 `json:"estimated_remaining_micro_usd"`
-	Status                 string  `json:"status"`
+	ProviderKeyID              string `json:"provider_key_id"`
+	ProviderID                 string `json:"provider_id"`
+	DisplayName                string `json:"display_name"`
+	KeyPrefix                  string `json:"key_prefix"`
+	StartingBalanceMicroUSD    int64  `json:"starting_balance_micro_usd"`
+	AdjustmentsMicroUSD        int64  `json:"adjustments_micro_usd"`
+	KnownSpendMicroUSD         int64  `json:"known_spend_micro_usd"`
+	EstimatedRemainingMicroUSD int64  `json:"estimated_remaining_micro_usd"`
+	Status                     string `json:"status"`
 }

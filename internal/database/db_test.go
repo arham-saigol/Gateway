@@ -326,12 +326,12 @@ func TestRollupSequenceRetryTotalRequests(t *testing.T) {
 	}
 
 	dateUTC := now.Format("2006-01-02")
-	var totalReqs, successReqs, failReqs, retries int
+	var totalReqs, successReqs, failReqs, retries, failovers int
 	err = db.Conn().QueryRow(`
-		SELECT total_requests, successful_requests, failed_requests, retries
+		SELECT total_requests, successful_requests, failed_requests, retries, failovers
 		FROM usage_rollups_daily
 		WHERE date_utc = ? AND provider_key_id = ?
-	`, dateUTC, keyID).Scan(&totalReqs, &successReqs, &failReqs, &retries)
+	`, dateUTC, keyID).Scan(&totalReqs, &successReqs, &failReqs, &retries, &failovers)
 	if err != nil {
 		t.Fatalf("failed to query daily rollup: %v", err)
 	}
@@ -347,5 +347,29 @@ func TestRollupSequenceRetryTotalRequests(t *testing.T) {
 	}
 	if retries != 1 {
 		t.Errorf("expected retries = 1, got %d", retries)
+	}
+	if failovers != 0 {
+		t.Errorf("expected failovers = 0 for a retry on the same route, got %d", failovers)
+	}
+
+	err = db.FinalizeAttemptAndRollup(database.RequestAttemptRecord{
+		ID: "att-3", RequestID: reqID, ProviderID: "siliconflow", ProviderKeyID: keyID,
+		MappingID: "map-sf-flash", Sequence: 3, Status: "success", HTTPStatus: &http200,
+		UsageConfidence: "unavailable", CreatedAt: now,
+	}, database.RequestRecord{
+		ID: reqID, PublicModelID: "deepseek-v4-flash", GatewayKeyID: &gwKeyID,
+		Status: "success", UsageConfidence: "unavailable", RetryCount: 2, FailoverCount: 1, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("failed to record failover attempt: %v", err)
+	}
+	if err := db.Conn().QueryRow(`
+		SELECT COALESCE(SUM(failovers), 0) FROM usage_rollups_daily
+		WHERE date_utc = ? AND provider_key_id = ?
+	`, dateUTC, keyID).Scan(&failovers); err != nil {
+		t.Fatal(err)
+	}
+	if failovers != 1 {
+		t.Errorf("expected one route failover, got %d", failovers)
 	}
 }

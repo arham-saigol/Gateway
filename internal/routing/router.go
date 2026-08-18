@@ -18,7 +18,6 @@ var (
 )
 
 type Target struct {
-	PublicModelID      string
 	ProviderID         string
 	ProviderKeyID      string
 	MappingID          string
@@ -27,8 +26,6 @@ type Target struct {
 	InputRateSnapshot  int64
 	CachedRateSnapshot int64
 	OutputRateSnapshot int64
-	SupportsStreaming  bool
-	SupportsTools      bool
 }
 
 type Router struct {
@@ -125,11 +122,6 @@ func (r *Router) SelectNextTarget(publicModelID string, attemptedKeyIDs map[stri
 			continue
 		}
 
-		mapping, err := r.db.GetProviderModelMapping(route.MappingID)
-		if err != nil || !mapping.Enabled {
-			continue
-		}
-
 		// Retrieve keys for this provider
 		keys, err := r.db.ListProviderKeys(route.ProviderID)
 		if err != nil || len(keys) == 0 {
@@ -161,27 +153,25 @@ func (r *Router) SelectNextTarget(publicModelID string, attemptedKeyIDs map[stri
 		r.keyCounters[route.ProviderID]++
 		r.mu.Unlock()
 
-		selectedKey := availableKeys[idx]
+		for offset := range availableKeys {
+			selectedKey := availableKeys[(idx+offset)%len(availableKeys)]
+			decrypted, err := crypto.Decrypt(r.masterKey, selectedKey.EncryptedSecret)
+			if err != nil {
+				_ = r.MarkKeyAuthInvalid(selectedKey.ID, "Stored key cannot be decrypted; re-add it")
+				continue
+			}
 
-		// Decrypt secret
-		decrypted, err := crypto.Decrypt(r.masterKey, selectedKey.EncryptedSecret)
-		if err != nil {
-			return nil, fmt.Errorf("decrypting secret for key %s: %w", selectedKey.ID, err)
+			return &Target{
+				ProviderID:         route.ProviderID,
+				ProviderKeyID:      selectedKey.ID,
+				MappingID:          route.MappingID,
+				UpstreamModelID:    route.UpstreamModelID,
+				DecryptedSecret:    decrypted,
+				InputRateSnapshot:  route.InputRatePerMTokens,
+				CachedRateSnapshot: route.CachedRatePerMTokens,
+				OutputRateSnapshot: route.OutputRatePerMTokens,
+			}, nil
 		}
-
-		return &Target{
-			PublicModelID:      publicModelID,
-			ProviderID:         route.ProviderID,
-			ProviderKeyID:      selectedKey.ID,
-			MappingID:          mapping.ID,
-			UpstreamModelID:    mapping.UpstreamModelID,
-			DecryptedSecret:    decrypted,
-			InputRateSnapshot:  mapping.InputRatePerMTokens,
-			CachedRateSnapshot: mapping.CachedRatePerMTokens,
-			OutputRateSnapshot: mapping.OutputRatePerMTokens,
-			SupportsStreaming:  mapping.SupportsStreaming,
-			SupportsTools:      mapping.SupportsTools,
-		}, nil
 	}
 
 	return nil, ErrNoHealthyKeysFound

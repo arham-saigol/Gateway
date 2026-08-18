@@ -54,7 +54,7 @@ func TestProviderAdapterExecuteChat(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter := providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", server.URL, "Bearer", 0)
+	adapter := providers.NewGenericOpenAIAdapter("fireworks", server.URL, "Bearer", 0)
 
 	req := &providers.ChatRequest{
 		Model: "accounts/fireworks/models/deepseek-v4-flash",
@@ -108,7 +108,7 @@ func TestProviderAdapterStreamingChat(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter := providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", server.URL, "Bearer", 0)
+	adapter := providers.NewGenericOpenAIAdapter("fireworks", server.URL, "Bearer", 0)
 
 	req := &providers.ChatRequest{
 		Model: "accounts/fireworks/models/deepseek-v4-flash",
@@ -148,7 +148,7 @@ func TestProviderAdapterStreamingChat(t *testing.T) {
 }
 
 func TestClassifyError(t *testing.T) {
-	adapter := providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", "https://api.fireworks.ai", "Bearer", 0)
+	adapter := providers.NewGenericOpenAIAdapter("fireworks", "https://api.fireworks.ai", "Bearer", 0)
 
 	if c := adapter.ClassifyError(401, nil); c != providers.ErrorClassificationAuthInvalid {
 		t.Errorf("expected 401 to be AuthInvalid, got %v", c)
@@ -186,7 +186,7 @@ func TestProviderAdapterStreamingChatCancellation(t *testing.T) {
 	defer server.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	adapter := providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", server.URL, "Bearer", 0)
+	adapter := providers.NewGenericOpenAIAdapter("fireworks", server.URL, "Bearer", 0)
 
 	req := &providers.ChatRequest{
 		Model: "accounts/fireworks/models/deepseek-v4-flash",
@@ -241,7 +241,7 @@ func TestProviderAdapterStreamingChatUnexpectedEOF(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter := providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", server.URL, "Bearer", 0)
+	adapter := providers.NewGenericOpenAIAdapter("fireworks", server.URL, "Bearer", 0)
 
 	req := &providers.ChatRequest{
 		Model: "accounts/fireworks/models/deepseek-v4-flash",
@@ -272,7 +272,7 @@ func TestProviderAdapterStreamingChatUnexpectedEOF(t *testing.T) {
 func TestProviderAdapterDialTimeout(t *testing.T) {
 	// Using a non-routable IP from RFC 5737 test range
 	dialTimeout := 100 * time.Millisecond
-	adapter := providers.NewGenericOpenAIAdapter("fireworks", "Fireworks AI", "http://198.51.100.1:81", "Bearer", dialTimeout)
+	adapter := providers.NewGenericOpenAIAdapter("fireworks", "http://198.51.100.1:81", "Bearer", dialTimeout)
 
 	req := &providers.ChatRequest{
 		Model: "accounts/fireworks/models/deepseek-v4-flash",
@@ -294,5 +294,4 @@ func TestProviderAdapterDialTimeout(t *testing.T) {
 		t.Fatalf("expected dial timeout to bound connection attempt (took %v, expected < 2s)", elapsed)
 	}
 }
-
 

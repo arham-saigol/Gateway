@@ -119,6 +119,18 @@ func TestAdminAuthLifecycle(t *testing.T) {
 	}
 }
 
+func TestAdminLoginRejectsOversizedBody(t *testing.T) {
+	_, _, _, handler := setupAdminTestEnv(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"password":"`+strings.Repeat("x", 5000)+`"}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized login body, got %d", rec.Code)
+	}
+}
+
 func TestProviderKeyAndGatewayKeyManagement(t *testing.T) {
 	_, _, adminPass, handler := setupAdminTestEnv(t)
 	cookie, csrf := loginAdmin(t, handler, adminPass)
@@ -327,5 +339,3 @@ func TestProviderKeyNotFoundAndValidation(t *testing.T) {
 		t.Fatalf("expected 404 for unknown provider key adjustment, got %d: %s", recAdj.Code, recAdj.Body.String())
 	}
 }
-
-

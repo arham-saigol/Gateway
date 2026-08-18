@@ -186,45 +186,26 @@ func (db *DB) SeedDefaults() error {
 	}
 
 	// Seed Routing Entries
-	routesFlash := []struct {
-		id        string
-		mappingID string
-		priority  int
+	routes := []struct {
+		id, publicModelID, mappingID string
+		priority                     int
 	}{
-		{"route-flash-1", "map-fw-flash", 1},
-		{"route-flash-2", "map-sf-flash", 2},
-		{"route-flash-3", "map-nov-flash", 3},
-		{"route-flash-4", "map-base-flash", 4},
+		{"route-flash-1", "deepseek-v4-flash", "map-fw-flash", 1},
+		{"route-flash-2", "deepseek-v4-flash", "map-sf-flash", 2},
+		{"route-flash-3", "deepseek-v4-flash", "map-nov-flash", 3},
+		{"route-flash-4", "deepseek-v4-flash", "map-base-flash", 4},
+		{"route-fast-1", "deepseek-v4-flash-fast", "map-base-fast", 1},
+		{"route-fast-2", "deepseek-v4-flash-fast", "map-nov-fast", 2},
+		{"route-fast-3", "deepseek-v4-flash-fast", "map-sf-fast", 3},
+		{"route-fast-4", "deepseek-v4-flash-fast", "map-fw-fast", 4},
 	}
 
-	for _, r := range routesFlash {
+	for _, r := range routes {
 		_, err := tx.Exec(`
 			INSERT INTO routing_entries (id, public_model_id, mapping_id, priority, created_at)
-			VALUES (?, 'deepseek-v4-flash', ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT(public_model_id, mapping_id) DO NOTHING
-		`, r.id, r.mappingID, r.priority, now)
-		if err != nil {
-			return fmt.Errorf("seeding route %s: %w", r.id, err)
-		}
-	}
-
-	routesFast := []struct {
-		id        string
-		mappingID string
-		priority  int
-	}{
-		{"route-fast-1", "map-base-fast", 1},
-		{"route-fast-2", "map-nov-fast", 2},
-		{"route-fast-3", "map-sf-fast", 3},
-		{"route-fast-4", "map-fw-fast", 4},
-	}
-
-	for _, r := range routesFast {
-		_, err := tx.Exec(`
-			INSERT INTO routing_entries (id, public_model_id, mapping_id, priority, created_at)
-			VALUES (?, 'deepseek-v4-flash-fast', ?, ?, ?)
-			ON CONFLICT(public_model_id, mapping_id) DO NOTHING
-		`, r.id, r.mappingID, r.priority, now)
+		`, r.id, r.publicModelID, r.mappingID, r.priority, now)
 		if err != nil {
 			return fmt.Errorf("seeding route %s: %w", r.id, err)
 		}

@@ -26,6 +26,11 @@ type loginAttempt struct {
 	blockedUntil time.Time
 }
 
+const (
+	maxLoginBodyBytes = 4 * 1024
+	maxLoginAttempts  = 10_000
+)
+
 type Handler struct {
 	db        *database.DB
 	masterKey []byte
@@ -179,7 +184,13 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Password == "" {
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxLoginBodyBytes)).Decode(&body)
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+		return
+	}
+	if err != nil || body.Password == "" {
 		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
@@ -188,6 +199,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 
 	h.rateMu.Lock()
+	h.pruneLoginAttemptsLocked(now)
 	if att, exists := h.attempts[clientIP]; exists {
 		if now.Before(att.blockedUntil) {
 			h.rateMu.Unlock()
@@ -220,9 +232,12 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		h.rateMu.Lock()
 		att, ok := h.attempts[clientIP]
 		if !ok || now.Sub(att.firstFailed) > 5*time.Minute {
+			if len(h.attempts) >= maxLoginAttempts {
+				h.evictOldestLoginAttemptLocked()
+			}
 			h.attempts[clientIP] = &loginAttempt{
 				failedCount: 1,
-				firstFailed:  now,
+				firstFailed: now,
 			}
 		} else {
 			att.failedCount++
@@ -273,6 +288,25 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"csrf_token": csrfToken,
 		"expires_at": expiry,
 	})
+}
+
+func (h *Handler) pruneLoginAttemptsLocked(now time.Time) {
+	for ip, att := range h.attempts {
+		if now.Sub(att.firstFailed) > 5*time.Minute && !now.Before(att.blockedUntil) {
+			delete(h.attempts, ip)
+		}
+	}
+}
+
+func (h *Handler) evictOldestLoginAttemptLocked() {
+	var oldestIP string
+	var oldest time.Time
+	for ip, att := range h.attempts {
+		if oldestIP == "" || att.firstFailed.Before(oldest) {
+			oldestIP, oldest = ip, att.firstFailed
+		}
+	}
+	delete(h.attempts, oldestIP)
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -605,7 +639,7 @@ func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 	type modelWithRoutes struct {
 		database.PublicModel
-		Routes   []database.RoutingEntry       `json:"routes"`
+		Routes   []database.RoutingEntry         `json:"routes"`
 		Mappings []database.ProviderModelMapping `json:"mappings"`
 	}
 
@@ -826,11 +860,11 @@ func (h *Handler) handleGetRequestDetail(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"listen_addr":                     h.cfg.Server.ListenAddr,
+		"listen_addr":                    h.cfg.Server.ListenAddr,
 		"first_response_timeout_seconds": h.cfg.Timeouts.FirstResponseTimeout.Duration().Seconds(),
 		"stream_drain_timeout_seconds":   h.cfg.Timeouts.StreamDrainTimeout.Duration().Seconds(),
 		"detailed_log_days":              h.cfg.Retention.DetailedLogDays,
-		"max_retries":                     h.cfg.Routing.MaxRetriesPerRequest,
-		"key_cooldown_seconds":            h.cfg.Routing.KeyCooldownDuration.Duration().Seconds(),
+		"max_retries":                    h.cfg.Routing.MaxRetriesPerRequest,
+		"key_cooldown_seconds":           h.cfg.Routing.KeyCooldownDuration.Duration().Seconds(),
 	})
 }
