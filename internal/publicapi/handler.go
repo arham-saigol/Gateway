@@ -556,13 +556,16 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 
-		var ttftMs *int64
+		var reqTTFTMs *int64
+		var attemptTTFTMs *int64
 		var finalUsage *providers.Usage
 		var streamErr error
 
-		if firstEv.IsFirst && firstEv.TTFT > 0 {
-			ttft := firstEv.TTFT.Milliseconds()
-			ttftMs = &ttft
+		if firstEv.IsFirst {
+			reqTTFT := time.Since(reqStartTime).Milliseconds()
+			attTTFT := time.Since(attemptStart).Milliseconds()
+			reqTTFTMs = &reqTTFT
+			attemptTTFTMs = &attTTFT
 		}
 		if firstEv.Chunk != nil {
 			firstEv.Chunk.ID = gatewayRequestID
@@ -585,9 +588,11 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 				break
 			}
 
-			if ev.IsFirst && ev.TTFT > 0 && ttftMs == nil {
-				ttft := ev.TTFT.Milliseconds()
-				ttftMs = &ttft
+			if ev.IsFirst && reqTTFTMs == nil {
+				reqTTFT := time.Since(reqStartTime).Milliseconds()
+				attTTFT := time.Since(attemptStart).Milliseconds()
+				reqTTFTMs = &reqTTFT
+				attemptTTFTMs = &attTTFT
 			}
 
 			if ev.Chunk != nil {
@@ -656,7 +661,7 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			Sequence:           attemptSeq,
 			Status:             status,
 			ErrorCategory:      errCat,
-			TTFTMs:             ttftMs,
+			TTFTMs:             attemptTTFTMs,
 			DurationMs:         attemptDuration.Milliseconds(),
 			InputTokens:        inPtr,
 			CachedInputTokens:  cachedPtr,
@@ -674,7 +679,7 @@ func (h *Handler) handleStreamingChat(w http.ResponseWriter, r *http.Request, gw
 			Status:            status,
 			ErrorCategory:     errCat,
 			Stream:            true,
-			TTFTMs:            ttftMs,
+			TTFTMs:            reqTTFTMs,
 			TotalDurationMs:   time.Since(reqStartTime).Milliseconds(),
 			InputTokens:       inPtr,
 			CachedInputTokens: cachedPtr,

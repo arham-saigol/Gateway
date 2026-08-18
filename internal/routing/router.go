@@ -51,11 +51,16 @@ func NewRouter(db *database.DB, masterKey []byte, cfg *config.Config) *Router {
 		keyCounters: make(map[string]uint64),
 	}
 
+	dialTimeout := 10 * time.Second
+	if cfg != nil && cfg.Timeouts.UpstreamDialTimeout.Duration() > 0 {
+		dialTimeout = cfg.Timeouts.UpstreamDialTimeout.Duration()
+	}
+
 	// Register built-in adapters
-	r.RegisterAdapter(providers.NewFireworksAdapter())
-	r.RegisterAdapter(providers.NewSiliconFlowAdapter())
-	r.RegisterAdapter(providers.NewNovitaAdapter())
-	r.RegisterAdapter(providers.NewBasetenAdapter())
+	r.RegisterAdapter(providers.NewFireworksAdapter(dialTimeout))
+	r.RegisterAdapter(providers.NewSiliconFlowAdapter(dialTimeout))
+	r.RegisterAdapter(providers.NewNovitaAdapter(dialTimeout))
+	r.RegisterAdapter(providers.NewBasetenAdapter(dialTimeout))
 
 	return r
 }
